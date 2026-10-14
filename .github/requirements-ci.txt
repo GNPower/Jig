@@ -1,0 +1,3 @@
+# The tool every workflow job installs first, noxfile.py installs the rest.
+# Dependabot keeps the pin current.
+nox==2026.8.17
