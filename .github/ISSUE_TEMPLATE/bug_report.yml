@@ -1,0 +1,68 @@
+name: Bug report
+description: Jig did something wrong while running, listing or checking a plan.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search the open issues first. Report security problems privately,
+        as SECURITY.md describes, not here.
+  - type: input
+    id: jig-version
+    attributes:
+      label: Jig version
+      description: The output of `jig --version`.
+      placeholder: jig-dsl 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: renode-version
+    attributes:
+      label: Renode version
+      description: The first two lines of `renode --version`, or the Renode line of `jig doctor`.
+      placeholder: "Renode v1.17.0, build: 1.17.0+20260906gitf1dd1b4af"
+    validations:
+      required: true
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      description: The output of `python --version` in the environment that runs Jig.
+      placeholder: Python 3.13.1
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      description: Name, version and architecture, say so if Jig runs in a container.
+      placeholder: Ubuntu 24.04 on x86-64
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: The command you ran, what you expected, and what Jig did instead.
+    validations:
+      required: true
+  - type: textarea
+    id: plan
+    attributes:
+      label: Plan
+      description: The smallest .jig plan, or the part of one, that shows the problem.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: The terminal output of `jig run -v`, and the failing test's steps from the report.
+      render: text
+  - type: textarea
+    id: board
+    attributes:
+      label: Board definition
+      description: The board.yaml involved, if the problem concerns a board.
+      render: yaml

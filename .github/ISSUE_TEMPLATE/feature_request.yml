@@ -1,0 +1,28 @@
+name: Feature request
+description: Something a plan or a board definition should be able to say.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you want to test
+      description: The firmware behaviour or board you want to cover, and what stops you today.
+    validations:
+      required: true
+  - type: textarea
+    id: sketch
+    attributes:
+      label: Sketch
+      description: How a .jig plan or a board.yaml could express it, even if Jig can't parse it yet.
+      render: text
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried
+      description: Workarounds you use now, such as a plugin function or a monitor command.
+  - type: input
+    id: jig-version
+    attributes:
+      label: Jig version
+      description: The output of `jig --version`.
+      placeholder: jig-dsl 0.1.0
