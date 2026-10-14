@@ -1,0 +1,75 @@
+# Two ZedBoards on one CAN bus, with the ground station on zed-a's KISS link:
+# console pings between the boards, the ground station's packets crossing the
+# bus, a ping that needs 26 CAN frames each way, the status records and a ping
+# that nobody answers. Tutorial 2 in the documentation builds this plan step
+# by step.
+
+import "zed.jig"
+
+system "two ZedBoards on CAN" {
+    board a: "zed-a"
+    board b: "zed-b"
+    bus can0: can(bitrate: 1 Mbit/s, members: [a.can, b.can])
+    node ground: csp(address: 10, link: a.kiss)
+}
+
+setup {
+    parallel {
+        task zed_a { booted(a, 1) }
+        task zed_b { booted(b, 2) }
+    }
+}
+
+test "the boards ping each other over CAN" {
+    a.console.clear()
+    b.console.clear()
+    parallel {
+        task from_a {
+            a.send("ping 2")
+            a.expect(/reply from 2: 32 bytes/, within: 2 s)
+        }
+        task from_b {
+            b.send("ping 1")
+            b.expect(/reply from 1: 32 bytes/, within: 2 s)
+        }
+    }
+}
+
+test "zed-a forwards the ground station's packets to zed-b" {
+    check ground.ping(a) < 20 ms
+    check ground.ping(b) < 50 ms
+    let routes = can0.traffic().routes
+    check routes["10->2:1"] == 1
+    check not ("10->1:1" in routes)
+}
+
+test "a 200-byte ping crosses the bus in fragments" {
+    let start = now()
+    let frames = can0.frames
+    let rtt = ground.ping(b, size: 200)
+    log "{can0.frames - frames} CAN frames, {rtt * 1000:.1f} ms"
+    check can0.frames - frames == 2 * cfp_frames(200)
+    let requests = can0.packets(src: 10, dst: 2, since: start)
+    check len(requests) == 1
+    check requests[0].length == 200
+    check can0.traffic().incomplete == 0
+}
+
+test "zed-a counts the packets it forwards" {
+    let before = ground.hk(a)
+    ground.ping(b)
+    let after = ground.hk(a)
+    check after.node == 1
+    check after.routed - before.routed == 2
+}
+
+test "a ping to an absent node times out" {
+    let answered = true
+    try {
+        ground.ping(5, timeout: 500 ms)
+    } catch error {
+        answered = false
+        log "{error.kind}: {error.message}"
+    }
+    check not answered
+}

@@ -1,0 +1,64 @@
+# One ZedBoard: zed-a's boot banner, its console commands, its uptime against
+# simulated time, and a ground station on its KISS link asking for a ping, the
+# status record and the uptime in seconds. Tutorial 1 in the documentation
+# builds this plan step by step.
+
+system "one ZedBoard" {
+    board a: "zed-a"
+    node ground: csp(address: 10, link: a.kiss)
+}
+
+procedure uptime_ms(board) {
+    let found = match(/uptime (\d+) ms/, board.cli("uptime"))
+    check found != none, "no uptime in the console output"
+    return found.number(1)
+}
+
+setup {
+    a.console.expect(/zed-a: CSP address 1/, within: 2 s)
+    a.console.expect("zed> ")
+}
+
+test "the console names the node and its links" {
+    let status = a.cli("status")
+    check status contains "zed-a, CSP address 1"
+    check status matches /kiss\s+uart0, 115200 baud/
+    check status matches /can0\s+1000 kbit\/s, normal mode, error active/
+}
+
+test "help lists every command" {
+    let help = a.cli("help")
+    for command in ["help", "status", "stats", "uptime", "ping"] {
+        check help contains "  {command} "
+    }
+}
+
+test "uptime follows simulated time" {
+    let before = uptime_ms(a)
+    wait 2 s
+    let after = uptime_ms(a)
+    check after - before in 2000 .. 2500
+}
+
+test "the ground station pings zed-a" {
+    let rtt = ground.ping(a)
+    log "round trip {rtt * 1000:.1f} ms"
+    check rtt < 20 ms
+}
+
+test "the status record names node 1" {
+    let reply = ground.request(a, 10, x"01")
+    check len(reply) == 36
+    check reply.startswith(x"5A454453")
+    check reply[5] == 1
+}
+
+test "port 6 answers the uptime in whole seconds" {
+    let before = uptime_ms(a)
+    let reply = ground.request(a, 6)
+    let after = uptime_ms(a)
+    check len(reply) == 4
+    let seconds = number("0x" + reply.hex())
+    log "uptime {seconds} s, console {before} ms then {after} ms"
+    check seconds in floor(before / 1000) .. floor(after / 1000)
+}

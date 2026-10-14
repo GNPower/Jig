@@ -1,0 +1,12 @@
+# Procedures the ZedBoard example's plans share. jig.toml lists this directory
+# under [paths] lib, so a plan imports the file by name:
+#
+#   import "zed.jig"
+
+# Wait for a board's boot banner, which names the board definition and its
+# CSP address, then for the console's first prompt. Returns the banner match.
+procedure booted(board, address, timeout = 2 s) {
+    let banner = board.console.expect("{board.board}: CSP address {address} ", within: timeout)
+    board.console.expect("zed> ", within: timeout)
+    return banner
+}

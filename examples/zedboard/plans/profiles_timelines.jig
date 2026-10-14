@@ -1,0 +1,71 @@
+# Work on a schedule: zed-b's status polled every second and recorded, pings
+# whose size follows a ramp, and pings across a one-second outage of the ground
+# station's link. Tutorial 3 in the documentation builds this plan step by
+# step.
+
+import "zed.jig"
+
+system "two ZedBoards on CAN" {
+    board a: "zed-a"
+    board b: "zed-b"
+    bus can0: can(bitrate: 1 Mbit/s, members: [a.can, b.can])
+    node ground: csp(address: 10, link: a.kiss)
+}
+
+setup {
+    parallel {
+        task zed_a { booted(a, 1) }
+        task zed_b { booted(b, 2) }
+    }
+}
+
+test "zed-b's counters over ten seconds" {
+    let previous = none
+    every 1 s for 10 s as i {
+        let status = ground.hk(b)
+        record uptime = status.uptime_ms / 1000
+        record can_received = status.can_received
+        if previous != none {
+            check status.uptime_ms - previous in 999 .. 1001
+        }
+        previous = status.uptime_ms
+    }
+}
+
+test "ping sizes follow a ramp" {
+    let size = ramp(16, 256, over: 10 s)
+    let start = now()
+    every 500 ms for 10 s {
+        let bytes = round(size.at(now() - start))
+        let rtt = ground.ping(b, size: bytes)
+        record ping_bytes = bytes
+        record ping_ms = rtt * 1000
+        check rtt < 100 ms
+    }
+}
+
+test "pings across a link outage" {
+    let answered = 0
+    let lost = 0
+    timeline {
+        at 0 s as pinger {
+            every 200 ms for 5 s {
+                try {
+                    ground.ping(a, timeout: 100 ms)
+                    answered += 1
+                } catch {
+                    lost += 1
+                }
+            }
+        }
+        at 2 s as outage {
+            ground.link_down()
+            wait 1 s
+            ground.link_up()
+        }
+    }
+    record answered = answered
+    record lost = lost
+    check lost >= 4
+    check answered >= 15
+}

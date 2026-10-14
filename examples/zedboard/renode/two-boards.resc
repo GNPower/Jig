@@ -1,0 +1,82 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Graham Power
+#
+# Two ZedBoards on one CAN bus, and a TCP socket for the ground station.
+#
+#   zed-a  CSP address 1  zed-node-1.elf  CAN0, and KISS on UART0 (TCP port $kiss_port)
+#   zed-b  CSP address 2  zed-node-2.elf  CAN0
+#
+# Each board's console, UART1, opens in an analyzer window when Renode runs
+# with its GUI, and is also on a TCP socket: $console_a_port for zed-a,
+# $console_b_port for zed-b.
+#
+# Build the firmware first (firmware/build.py), then from any directory:
+#     renode <path>/examples/zedboard/renode/two-boards.resc
+# and in a second terminal:
+#     python <path>/examples/zedboard/tools/ground.py
+#
+# Set any of the variables below before including this script to change it.
+# The script needs a checkout of the Jig repository: it compiles Jig's models
+# from $jig_models and loads Jig's Zynq-7000 platform from $jig_platforms.
+
+:name: Two ZedBoards on CAN
+:description: zed-a and zed-b share CAN0; zed-a carries KISS to a ground station on a TCP socket.
+
+$jig_models?=$ORIGIN/../../../src/jig/models
+$jig_platforms?=$ORIGIN/../../../src/jig/platforms
+$zed_a_elf?=$ORIGIN/../firmware/build/zed-node-1.elf
+$zed_b_elf?=$ORIGIN/../firmware/build/zed-node-2.elf
+$kiss_port?=4560
+$console_a_port?=4561
+$console_b_port?=4562
+
+# Jig's models, compiled by Renode as the script loads (every file but the
+# harness bridge, which only Jig's own runs use).
+include $jig_models/Arm/CortexA9GlobalTimer.cs $jig_models/Arm/CortexA9PrivateTimerWatchdog.cs $jig_models/Arm/GicDistributorHooks.cs $jig_models/Arm/PL310.cs $jig_models/Cadence/CadenceSPI.cs $jig_models/Cadence/CadenceUART.cs $jig_models/Cadence/CadenceWDT.cs $jig_models/Contracts/ContractQueries.cs $jig_models/Contracts/IAnalogInputs.cs $jig_models/Contracts/IPowerCycled.cs $jig_models/Contracts/IRealTimeClock.cs $jig_models/Contracts/ISpiNorFlash.cs $jig_models/Contracts/IStorage.cs $jig_models/Harness/AirhdlRegisterBlock.cs $jig_models/Harness/CanBus.cs $jig_models/Harness/RegisterProgram.cs $jig_models/Harness/Stepping.cs $jig_models/Harness/UartPort.cs $jig_models/Xilinx/XilinxAxiCdma.cs $jig_models/Xilinx/XilinxAxiGpio.cs $jig_models/Xilinx/XilinxAxiQuadSpi.cs $jig_models/Xilinx/Zynq7000_BootROM.cs $jig_models/Xilinx/Zynq7000_CAN.cs $jig_models/Xilinx/Zynq7000_DDRC.cs $jig_models/Xilinx/Zynq7000_DevC.cs $jig_models/Xilinx/Zynq7000_EFuse.cs $jig_models/Xilinx/Zynq7000_GPIO.cs $jig_models/Xilinx/Zynq7000_PlDomain.cs $jig_models/Xilinx/Zynq7000_QSPI.cs $jig_models/Xilinx/Zynq7000_SLCR.cs
+
+# The board descriptions below name Jig's platform and the ZedBoard's file by
+# these search paths.
+path add $jig_platforms
+path add $ORIGIN/..
+
+# One CAN bus for both CAN0 controllers.
+emulation CreateCANHub "canbus"
+
+# Each machine loads Jig's Zynq-7000 platform, then the ZedBoard's changes to
+# it. Each board boots the way a JTAG debugger loads a Zynq: the BootROM runs
+# at power-on (it turns the system watchdog off) and holds the core, the
+# debugger loads the ELF, then lets the core run from the ELF's entry point.
+
+mach create "zed-a"
+machine LoadPlatformDescriptionFromString """
+using "xilinx/zynq7000.repl"
+using "zedboard.repl"
+"""
+connector Connect sysbus.can0 canbus
+emulation CreateServerSocketTerminal $kiss_port "kiss" false
+connector Connect sysbus.uart0 kiss
+emulation CreateServerSocketTerminal $console_a_port "console_a" false
+connector Connect sysbus.uart1 console_a
+showAnalyzer sysbus.uart1
+bootrom HoldCoreForDebugger true
+bootrom PowerOn
+sysbus LoadELF $zed_a_elf
+bootrom HoldCoreForDebugger false
+cpu0 IsHalted false
+
+mach create "zed-b"
+machine LoadPlatformDescriptionFromString """
+using "xilinx/zynq7000.repl"
+using "zedboard.repl"
+"""
+connector Connect sysbus.can0 canbus
+emulation CreateServerSocketTerminal $console_b_port "console_b" false
+connector Connect sysbus.uart1 console_b
+showAnalyzer sysbus.uart1
+bootrom HoldCoreForDebugger true
+bootrom PowerOn
+sysbus LoadELF $zed_b_elf
+bootrom HoldCoreForDebugger false
+cpu0 IsHalted false
+
+start

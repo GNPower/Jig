@@ -1,0 +1,150 @@
+# Two ZedBoards on one CAN bus and a ground station on zed-a's KISS link, the
+# system of the example's README. zed-a forwards the ground station's packets
+# for zed-b onto the bus and zed-b's answers back to the ground station.
+
+import "zed.jig"
+
+system "two ZedBoards and a ground station" {
+    board a: "zed-a"
+    board b: "zed-b"
+    bus can0: can(bitrate: 1 Mbit/s, members: [a.can, b.can])
+    node ground: csp(address: 10, link: a.kiss)
+}
+
+setup {
+    parallel {
+        task zed_a { booted(a, 1) }
+        task zed_b { booted(b, 2) }
+    }
+}
+
+test "the ground station reaches zed-b through zed-a" {
+    check ground.ping(b) < 50 ms
+    check can0.traffic().routes["10->2:1"] >= 1
+}
+
+test "the ground station pings both boards" {
+    let start = now()
+    let to_a = ground.ping(a)
+    let to_b = ground.ping(b)
+    log "round trips: zed-a {to_a * 1000:.2f} ms, zed-b {to_b * 1000:.2f} ms"
+    check to_a < 20 ms
+    check to_b < 50 ms
+    # Only the ping to zed-b crossed the bus, once each way
+    check len(can0.packets(src: 10, dst: 2, port: 1, since: start)) == 1
+    check len(can0.packets(src: 2, dst: 10, since: start)) == 1
+    check len(can0.packets(dst: 1, since: start)) == 0
+}
+
+test "the boards ping each other from their consoles" {
+    a.console.clear()
+    b.console.clear()
+    parallel {
+        task from_a {
+            a.send("ping 2")
+            a.expect(/reply from 2: 32 bytes in \d+ ms/, within: 2 s)
+        }
+        task from_b {
+            b.send("ping 1")
+            b.expect(/reply from 1: 32 bytes in \d+ ms/, within: 2 s)
+        }
+    }
+}
+
+test "a 200-byte ping crosses the gateway in fragments" {
+    let start = now()
+    let frames = can0.frames
+    let rtt = ground.ping(b, size: 200)
+    log "{can0.frames - frames} CAN frames, {rtt * 1000:.1f} ms"
+    check can0.frames - frames == 2 * cfp_frames(200)
+    let request = can0.packets(src: 10, dst: 2, since: start)
+    let answer = can0.packets(src: 2, dst: 10, since: start)
+    check len(request) == 1 and len(answer) == 1
+    check request[0].length == 200
+    check answer[0].data == request[0].data
+    check can0.traffic().incomplete == 0
+}
+
+test "both boards answer with their status" {
+    let status_a = ground.hk(a)
+    let status_b = ground.hk(b)
+    check status_a.magic == 0x5A454453 and status_a.version == 1
+    check status_a.node == 1 and status_b.node == 2
+    check status_a.can_tec == 0 and status_a.can_rec == 0
+    check status_b.can_tec == 0 and status_b.can_rec == 0
+    check status_a.crc_errors == 0 and status_b.crc_errors == 0
+    check status_b.kiss_sent == 0 and status_b.kiss_received == 0
+    # zed-b's answer crossed the bus, where the harness decoded it as well
+    let seen = can0.hk(b)
+    check len(seen) >= 1
+    check seen[len(seen) - 1].dst == 10
+    check seen[len(seen) - 1].node == 2
+}
+
+test "the counters agree with what the bus carried" {
+    let status_b = ground.hk(b)
+    let status_a = ground.hk(a)
+    let traffic = can0.traffic()
+    log "{traffic.frames} frames, {traffic.packets} packets, zed-a routed {status_a.routed}"
+    check traffic.crc_errors == 0 and traffic.incomplete == 0
+    # zed-b took its counts before its 36-byte answer went out
+    check traffic.frames == status_a.can_sent + status_b.can_sent + cfp_frames(36)
+    check status_a.can_received == status_b.can_sent + cfp_frames(36)
+    check status_b.can_received == status_a.can_sent
+    # zed-a forwarded every packet between the ground station and zed-b, and
+    # each of those crossed the bus once
+    check status_a.routed == len(can0.packets(src: 10)) + len(can0.packets(dst: 10))
+    check status_b.routed == 0
+}
+
+test "pings stop during a link outage and resume after it" {
+    let answered = 0
+    let lost = 0
+    timeline {
+        at 0 s as pinger {
+            every 200 ms for 5 s {
+                try {
+                    ground.ping(b, timeout: 100 ms)
+                    answered += 1
+                } catch {
+                    lost += 1
+                }
+            }
+        }
+        at 2 s as outage {
+            ground.link_down()
+            wait 1 s
+            ground.link_up()
+        }
+    }
+    log "{answered} pings answered, {lost} lost, {ground.stats.lost_sent} sent into the outage"
+    check lost in 4 .. 6
+    check answered + lost == 25
+    check ground.linked
+}
+
+test "zed-b waits for its debugger after a power cycle" {
+    b.console.clear()
+    b.power_cycle(off: 500 ms)
+    check b.powered
+    # With its boot-mode straps on JTAG, the BootROM holds core 0 for a
+    # debugger, so zed-b prints nothing and answers nothing
+    let answered = true
+    try {
+        ground.ping(b, timeout: 500 ms)
+    } catch {
+        answered = false
+    }
+    check not answered
+    check b.console.buffer == ""
+    check b.monitor("bootrom State") contains "WaitingForDebugger"
+    # The harness acknowledged zed-a's frames meanwhile, as a node on the bus does
+    check ground.hk(a).can_tec == 0
+    # boot() runs zed-b's boot flow again, here the debugger's load of its ELF
+    b.boot()
+    booted(b, 2)
+    let status = ground.hk(b)
+    check status.uptime_ms < 1000
+    check status.can_received == 1
+    check ground.ping(b) < 50 ms
+}
