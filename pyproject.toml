@@ -1,0 +1,192 @@
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jig-dsl"
+version = "0.1.0.dev0"
+description = "A test language and harness for firmware running on the Renode emulator"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Graham Power" }]
+keywords = ["renode", "emulation", "firmware", "testing", "embedded", "zynq", "stm32", "csp"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Embedded Systems",
+    "Topic :: Software Development :: Testing",
+    "Topic :: System :: Emulators",
+    "Typing :: Typed",
+]
+dependencies = [
+    "textX>=4,<5",
+    "PyYAML>=6,<7",
+    "platformdirs>=4,<5",
+    "packaging>=23",
+]
+
+[project.urls]
+Homepage = "https://github.com/GNPower/Jig"
+Documentation = "https://jig-dsl.readthedocs.io"
+Repository = "https://github.com/GNPower/Jig"
+Issues = "https://github.com/GNPower/Jig/issues"
+Changelog = "https://github.com/GNPower/Jig/blob/main/CHANGELOG.md"
+
+# The tool sets noxfile.py installs per session, CI and `dev` use the same pins.
+[project.optional-dependencies]
+test = [
+    "pytest>=8,<10",
+    "pytest-cov>=6,<8",
+]
+docs = [
+    "sphinx>=8.2,<10",
+    "sphinx-rtd-theme>=3.0,<4",
+    "myst-parser>=4.0,<6",
+]
+lint = [
+    "ruff==0.17.0",
+    "pymarkdownlnt==0.9.40",
+    "zizmor==1.30.1",
+]
+typecheck = [
+    "jig-dsl[test]",
+    "mypy==2.4.0",
+    "types-PyYAML==6.0.12.20260906",
+    "nox==2026.8.17",
+]
+release = [
+    "build==1.6.1",
+    "twine==7.0.0",
+    "bump-my-version==1.5.1",
+]
+audit = [
+    "pip-audit==2.10.1",
+]
+dev = [
+    "jig-dsl[test,lint,typecheck,release]",
+]
+
+[project.scripts]
+jig = "jig.cli:main"
+
+# SoC families: a board's `soc:` names one (board.yaml `soc_driver:` overrides).
+[project.entry-points."jig.socs"]
+zynq7000 = "jig.ext.zynq7000.driver:Zynq7000Driver"
+stm32 = "jig.system.socs.stm32:Stm32Driver"
+
+# Highlighting for .jig plans in Sphinx, Pygments and any tool built on them.
+[project.entry-points."pygments.lexers"]
+jig = "jig.lang.pygments_lexer:JigLexer"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+jig = [
+    "py.typed",
+    "lang/grammar/*.tx",
+    "lang/stdlib/*.jig",
+    "models/**/*.cs",
+    "platforms/**/*.repl",
+    "ext/cosim/templates/*",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+# Markdown keeps to 80 columns (PyMarkdown, .markdownlint.json). The Python in
+# its code blocks is wrapped by hand, so ruff leaves .md files alone.
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "PTH", "N"]
+
+[tool.ruff.lint.per-file-ignores]
+# Statement and expression handlers are named after the grammar's rules (_s_If, _e_Sum).
+"src/jig/lang/interpreter.py" = ["N802"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+mypy_path = "src"
+packages = ["jig"]
+
+[[tool.mypy.overrides]]
+module = ["textx.*", "pygments.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+# The example's plugin tests need no Renode, so they run with the unit tests.
+testpaths = ["tests", "examples/zedboard/tests"]
+# The Renode tier starts Renode; run it with -m renode (JIG_RENODE set).
+addopts = "-m 'not renode and not firmware and not slow' --strict-markers"
+markers = [
+    "renode: needs Renode (JIG_RENODE or a managed install)",
+    "firmware: needs built firmware artifacts",
+    "slow: takes more than a few seconds",
+]
+
+[tool.coverage.run]
+source_pkgs = ["jig"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
+
+# PyMarkdown (`nox -s lint`) with the rules of .markdownlint.json: every rule
+# on, and a heading may repeat one outside its own section.
+[tool.pymarkdown]
+plugins.md024.siblings_only = true
+
+# One static version, here: jig.__version__ and the docs read it from the
+# installed metadata. bump-my-version neither commits nor tags. The release
+# commit and the tag vX.Y.Z are signed by hand. PEP 440 forms:
+# 0.1.0.dev0 -> (pre_l) 0.1.0a1 -> (pre_n) 0.1.0a2 -> (pre_l) 0.1.0b1 ->
+# 0.1.0rc1 -> 0.1.0 -> (patch) 0.1.1.dev1.
+[tool.bumpversion]
+current_version = "0.1.0.dev0"
+parse = """(?x)
+    (?P<major>0|[1-9]\\d*)\\.
+    (?P<minor>0|[1-9]\\d*)\\.
+    (?P<patch>0|[1-9]\\d*)
+    (?:(?P<pre_l>\\.dev|a|b|rc)(?P<pre_n>0|[1-9]\\d*))?
+"""
+serialize = [
+    "{major}.{minor}.{patch}{pre_l}{pre_n}",
+    "{major}.{minor}.{patch}",
+]
+commit = false
+tag = false
+allow_dirty = true
+
+[tool.bumpversion.parts.pre_l]
+values = [".dev", "a", "b", "rc", "final"]
+optional_value = "final"
+
+[tool.bumpversion.parts.pre_n]
+first_value = "1"
+
+[[tool.bumpversion.files]]
+filename = "pyproject.toml"
+regex = true
+search = '^version = "{current_version}"'
+replace = 'version = "{new_version}"'

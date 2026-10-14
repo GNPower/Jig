@@ -1,0 +1,20 @@
+# Read the Docs build for https://jig-dsl.readthedocs.io. It installs this
+# checkout with the docs extra, so each documentation version comes from its
+# own commit, and fails on any Sphinx warning.
+version: 2
+
+build:
+  os: ubuntu-24.04
+  tools:
+    python: "3.13"
+
+sphinx:
+  configuration: docs/conf.py
+  fail_on_warning: true
+
+python:
+  install:
+    - method: pip
+      path: .
+      extra_requirements:
+        - docs

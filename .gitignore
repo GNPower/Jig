@@ -1,0 +1,25 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.nox/
+
+# Run output: logs, reports, storage images
+out/
+
+# C# model build output (one tree per host OS)
+tools/models/bin/
+tools/models/obj/
+
+# Sphinx output (nox -s docs)
+docs/_build/

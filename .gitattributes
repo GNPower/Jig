@@ -1,0 +1,14 @@
+# Text files keep LF in every checkout: they also run inside Linux containers.
+# Windows-only scripts keep CRLF.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+*.bin binary
+*.bit binary
+*.dll binary
+*.elf binary
+*.png binary
+*.xsa binary
+*.zip binary
