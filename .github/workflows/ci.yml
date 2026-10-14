@@ -1,0 +1,277 @@
+# Jig's checks: workflow lint, lint, types, unit tests on Linux, Windows and
+# macOS for Python 3.11 to 3.14, the Renode tier, RTL co-simulation, the
+# ZedBoard example's plans, the documentation and the distribution. Each job
+# runs one nox session from noxfile.py, so `nox -s <session>` repeats it on a
+# workstation, and act runs the Linux jobs locally (CONTRIBUTING.md). Steps
+# that act can't run check env.ACT: the Codecov upload (OIDC) and the artifact
+# uploads (act 0.2.89's artifact server rejects upload-artifact v7's requests).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  actionlint:
+    name: Workflow lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: actionlint (with shellcheck)
+        uses: docker://rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+        with:
+          args: -color
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Install nox
+        run: python -m pip install -r .github/requirements-ci.txt
+      - name: ruff, ruff format, PyMarkdown
+        run: nox -s lint
+
+  typecheck:
+    name: Types
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Install nox
+        run: python -m pip install -r .github/requirements-ci.txt
+      - name: mypy --strict
+        run: nox -s typecheck
+
+  tests:
+    name: Tests (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write # Codecov upload through OIDC
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest, macos-latest]
+        python: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install nox
+        run: python -m pip install -r .github/requirements-ci.txt
+      - name: Unit tests with coverage
+        env:
+          PYTHON: ${{ matrix.python }}
+        run: nox -s "tests-$PYTHON"
+      - name: Upload coverage
+        # OIDC: GitHub withholds the token from pull requests opened from forks.
+        if: ${{ !env.ACT && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          use_oidc: true
+          files: coverage.xml
+          flags: unit
+          name: ${{ matrix.os }}-python${{ matrix.python }}
+
+  renode:
+    name: Renode tier
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write # Codecov upload through OIDC
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: ARM GCC for the STM32 fixture, the .NET SDK for the strict model build
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-arm-none-eabi
+          command -v dotnet || sudo apt-get install -y --no-install-recommends dotnet-sdk-8.0
+      - name: Install nox
+        run: python -m pip install -r .github/requirements-ci.txt
+      - name: Renode cache key
+        id: renode
+        run: nox -s renode-key
+      - name: Restore Renode
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.renode.outputs.path }}
+          key: ${{ steps.renode.outputs.key }}
+      - name: Models, bridge and system tests on Renode
+        run: timeout 2400 nox -s renode
+      - name: Upload coverage
+        if: ${{ !env.ACT && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          use_oidc: true
+          files: coverage.xml
+          flags: renode
+          name: renode
+      - name: Keep the test report
+        if: ${{ !cancelled() && !env.ACT }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pytest-renode
+          path: out/pytest-renode.xml
+          if-no-files-found: ignore
+          retention-days: 14
+
+  cosim:
+    name: RTL co-simulation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Verilator
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends verilator g++ make
+      - name: Install nox
+        run: python -m pip install -r .github/requirements-ci.txt
+      - name: Renode cache key
+        id: renode
+        run: nox -s renode-key
+      - name: Restore Renode
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.renode.outputs.path }}
+          key: ${{ steps.renode.outputs.key }}
+      - name: A Verilated AXI4-Lite block on a Zynq-7000 machine
+        run: timeout 1800 nox -s cosim
+      - name: Keep the test report
+        if: ${{ !cancelled() && !env.ACT }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pytest-cosim
+          path: out/pytest-cosim.xml
+          if-no-files-found: ignore
+          retention-days: 14
+
+  example:
+    name: ZedBoard example
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: ARM GCC for the example's firmware
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-arm-none-eabi
+      - name: Install nox
+        run: python -m pip install -r .github/requirements-ci.txt
+      - name: Renode cache key
+        id: renode
+        run: nox -s renode-key
+      - name: Restore Renode
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.renode.outputs.path }}
+          key: ${{ steps.renode.outputs.key }}
+      - name: Build the firmware, then run every plan twice
+        run: timeout 2400 nox -s example
+      - name: Keep the reports and run directories
+        if: ${{ !cancelled() && !env.ACT }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: zedboard-reports
+          path: out/example/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  docs:
+    name: Documentation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Install nox
+        run: python -m pip install -r .github/requirements-ci.txt
+      - name: sphinx-build -W --keep-going -E
+        run: nox -s docs
+
+  dist:
+    name: Distribution
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Install nox
+        run: python -m pip install -r .github/requirements-ci.txt
+      - name: Renode cache key
+        id: renode
+        run: nox -s renode-key
+      - name: Restore Renode
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.renode.outputs.path }}
+          key: ${{ steps.renode.outputs.key }}
+      - name: Build, twine check, then the wheel from a clean venv on Renode
+        run: timeout 1200 nox -s dist
+      - name: Keep the distribution
+        if: ${{ !env.ACT }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,155 @@
+# Publishing jig-dsl through trusted publishing (OIDC): no token secrets.
+#
+# A published GitHub release vX.Y.Z checks that the tag names the version in
+# pyproject.toml, builds and checks the distribution, uploads it to TestPyPI
+# and installs it back from there when X.Y.Z is a pre-release (a, b, rc or
+# dev), then uploads it to PyPI with attestations and installs it back from
+# PyPI. Dispatching the workflow by hand is the TestPyPI rehearsal: it
+# publishes X.Y.Z.devN, N being the run number, to TestPyPI only.
+#
+# Needs, once: environments `testpypi` and `pypi` in the repository settings,
+# and a trusted publisher for this workflow and each environment on
+# test.pypi.org and pypi.org (CONTRIBUTING.md, "Releases").
+name: Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  dist:
+    name: Build and check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Install nox
+        run: python -m pip install -r .github/requirements-ci.txt
+      - name: The version to publish
+        id: version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          RUN: ${{ github.run_number }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = release ]; then
+            nox -s release-version -- --tag "$TAG"
+          else
+            nox -s release-version -- --dev "$RUN"
+          fi
+      # No cache here: the smoke test downloads Renode and checks its digest.
+      - name: Build, twine check, then the wheel from a clean venv on Renode
+        run: timeout 1500 nox -s dist
+      - name: Keep the distribution
+        if: ${{ !env.ACT }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+  testpypi:
+    name: Publish to TestPyPI
+    needs: dist
+    if: ${{ !github.event.act && (github.event_name == 'workflow_dispatch' || needs.dist.outputs.prerelease == 'true') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/jig-dsl
+    permissions:
+      id-token: write # trusted publishing and attestations
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          attestations: true
+
+  verify-testpypi:
+    name: Install from TestPyPI
+    needs: [dist, testpypi]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Install nox
+        run: python -m pip install -r .github/requirements-ci.txt
+      - name: Install jig-dsl from TestPyPI and run it on Renode
+        env:
+          VERSION: ${{ needs.dist.outputs.version }}
+        run: timeout 1500 nox -s verify -- testpypi "$VERSION"
+
+  pypi:
+    name: Publish to PyPI
+    needs: [dist, verify-testpypi]
+    # A pre-release goes to PyPI only after it installed from TestPyPI.
+    if: >-
+      ${{ !cancelled() && !github.event.act && github.event_name == 'release'
+      && needs.dist.result == 'success'
+      && (needs.dist.outputs.prerelease == 'false' || needs.verify-testpypi.result == 'success') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: pypi
+      url: https://pypi.org/p/jig-dsl
+    permissions:
+      id-token: write # trusted publishing and attestations
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          attestations: true
+
+  verify-pypi:
+    name: Install from PyPI
+    needs: [dist, pypi]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Install nox
+        run: python -m pip install -r .github/requirements-ci.txt
+      - name: Install jig-dsl from PyPI and run it on Renode
+        env:
+          VERSION: ${{ needs.dist.outputs.version }}
+        run: timeout 1500 nox -s verify -- pypi "$VERSION"
