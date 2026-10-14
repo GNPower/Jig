@@ -26,6 +26,7 @@ installed from PyPI or TestPyPI and smoke-tested like ``dist``).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import platform
@@ -36,7 +37,12 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from collections.abc import Callable
 from pathlib import Path
+from typing import TypeVar
 
 import nox
 from packaging.version import Version
@@ -47,6 +53,7 @@ nox.options.download_python = "never"  # a missing Python is an error, never a d
 
 ROOT = Path(__file__).resolve().parent
 PYPROJECT = nox.project.load_toml(ROOT / "pyproject.toml")
+T = TypeVar("T")
 PYTHONS = ["3.11", "3.12", "3.13", "3.14"]
 WINDOWS = sys.platform == "win32"
 
@@ -57,9 +64,10 @@ COVERAGE_FLOOR = 82
 MARKDOWN_TREES = ("docs", ".github", "examples", "src", "tests", "tools")
 MARKDOWN_SKIP_DIRS = frozenset({"_build", ".venv", ".nox", "node_modules", "out", "build"})
 
+# Each index's JSON API and the host its files are served from.
 INDEXES = {
-    "pypi": "https://pypi.org/simple/",
-    "testpypi": "https://test.pypi.org/simple/",
+    "pypi": ("https://pypi.org/pypi", "files.pythonhosted.org"),
+    "testpypi": ("https://test.pypi.org/pypi", "test-files.pythonhosted.org"),
 }
 
 
@@ -254,32 +262,63 @@ def dist(session: nox.Session) -> None:
 
 @nox.session(python=False)
 def verify(session: nox.Session) -> None:
-    """A published release, installed from its index into a clean venv and
+    """A published release, downloaded from its index into a clean venv and
     smoke-tested like ``dist``: ``nox -s verify -- pypi 0.1.0`` or
-    ``-- testpypi 0.1.0a1``. Retries for 10 minutes while the index catches up."""
+    ``-- testpypi 0.1.0a1``. Retries for 10 minutes while the index catches up.
+
+    The wheel's address and SHA-256 come from the release's own JSON page,
+    not the project's simple index: a CDN edge can serve a project index
+    from before the upload for longer than 10 minutes, while the release's
+    page is new and a missing release's 404 is not cached."""
     if len(session.posargs) != 2 or session.posargs[0] not in INDEXES:
         session.error("usage: nox -s verify -- {pypi|testpypi} VERSION")
     index, version = session.posargs
+    api, files_host = INDEXES[index]
+    url, sha256 = _retry(session, lambda: _published_wheel(f"{api}/jig-dsl/{version}/json"))
+    if urllib.parse.urlsplit(url).hostname != files_host:
+        session.error(f"the wheel is at {url}, not on {files_host}")
     with tempfile.TemporaryDirectory(prefix="jig-download-") as download:
         # Only jig-dsl comes from the index named, its dependencies come from
         # PyPI when the wheel installs, so TestPyPI never supplies them.
-        pip = [sys.executable, "-m", "pip", "download", "--no-deps", "--only-binary=:all:"]
-        _retry(
-            session,
-            [*pip, "--index-url", INDEXES[index], "--dest", download, f"jig-dsl=={version}"],
-        )
-        (wheel,) = Path(download).glob("*.whl")
+        wheel = Path(download) / Path(urllib.parse.urlsplit(url).path).name
+        with urllib.request.urlopen(url, timeout=60) as response:
+            wheel.write_bytes(response.read())
+        digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+        if digest != sha256:
+            session.error(f"{wheel.name} has SHA-256 {digest}, the index says {sha256}")
+        session.log(f"downloaded {wheel.name} from {files_host}, SHA-256 {digest}")
         _smoke(session, sys.executable, wheel, version)
 
 
-def _retry(session: nox.Session, command: list[str], attempts: int = 20) -> None:
-    for attempt in range(1, attempts + 1):
-        if subprocess.run(command, check=False).returncode == 0:
-            return
-        if attempt < attempts:
-            session.log(f"attempt {attempt} of {attempts} failed; retrying in 30 s")
+def _published_wheel(url: str) -> tuple[str, str] | None:
+    """The wheel's address and SHA-256 from a release's JSON page, or None
+    while the index doesn't list the release yet."""
+    try:
+        with urllib.request.urlopen(url, timeout=60) as response:
+            release = json.load(response)
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            return None
+        raise
+    for file in release["urls"]:
+        if file["packagetype"] == "bdist_wheel":
+            return str(file["url"]), str(file["digests"]["sha256"])
+    return None
+
+
+def _retry(session: nox.Session, attempt: Callable[[], T | None], attempts: int = 20) -> T:
+    for number in range(1, attempts + 1):
+        try:
+            result = attempt()
+        except (OSError, ValueError) as error:  # network errors and malformed JSON
+            session.log(f"attempt {number} of {attempts}: {error}")
+            result = None
+        if result is not None:
+            return result
+        if number < attempts:
+            session.log(f"attempt {number} of {attempts} found no wheel; retrying in 30 s")
             time.sleep(30)
-    session.error(f"failed {attempts} times: {' '.join(command)}")
+    session.error(f"no wheel after {attempts} attempts")
 
 
 def _smoke(session: nox.Session, base: str, wheel: Path, version: str) -> None:
