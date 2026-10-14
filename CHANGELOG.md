@@ -9,6 +9,8 @@ Breaking changes open with **Breaking** under Changed.
 
 ## [Unreleased]
 
+## [0.1.0a2] - 2026-10-14
+
 ### Changed
 
 - The ZedBoard example calls CSP node 10 the host computer: plans name it
@@ -95,5 +97,6 @@ Breaking changes open with **Breaking** under Changed.
   releases through PyPI trusted publishing, and security scans, and
   Dependabot updates.
 
-[Unreleased]: https://github.com/GNPower/Jig/compare/v0.1.0a1...HEAD
+[Unreleased]: https://github.com/GNPower/Jig/compare/v0.1.0a2...HEAD
+[0.1.0a2]: https://github.com/GNPower/Jig/compare/v0.1.0a1...v0.1.0a2
 [0.1.0a1]: https://github.com/GNPower/Jig/releases/tag/v0.1.0a1
