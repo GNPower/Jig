@@ -379,7 +379,9 @@ def _use_renode(session: nox.Session, jig: str) -> str:
     explicit = os.environ.get("JIG_RENODE")
     found = _renode_path(jig)
     if found is None and explicit:
-        session.error(f"JIG_RENODE={explicit} is not a usable Renode, check `jig renode path` for details")
+        session.error(
+            f"JIG_RENODE={explicit} is not a usable Renode, check `jig renode path` for details"
+        )
     if found is None:
         command = [jig, "renode", "install"] + (["--yes"] if os.environ.get("CI") else [])
         session.run(*command, external=True)

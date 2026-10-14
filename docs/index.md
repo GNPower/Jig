@@ -92,6 +92,5 @@ api_reference/index
 project/changelog
 project/contributing
 project/security
-project/code_of_conduct
 project/license
 ```

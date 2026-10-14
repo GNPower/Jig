@@ -1,6 +1,7 @@
 # Contributing to Jig
 
-Bug reports, fixes, board examples and documentation are welcome. The requirements for pull requests to this repo are listed here.
+Bug reports, fixes, board examples and documentation are welcome. The
+requirements for pull requests to this repo are listed here.
 
 ## Development setup
 
@@ -158,7 +159,7 @@ git clone -c core.autocrlf=input https://github.com/GNPower/Jig.git jig-act
 cd jig-act
 ```
 
-Then run one job at a time, with an event file holding 
+Then run one job at a time, with an event file holding
 `{"act": true}` so that jobs which only work on GitHub skip
 themselves:
 

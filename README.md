@@ -45,19 +45,21 @@ test "the host computer reaches zed-b through zed-a" {
 This is the start of `examples/zedboard/plans/multiboard.jig`. The setup
 waits, on both boards at once, for the boot banner and the first prompt
 (`booted` comes from the example's plan library, `lib/zed.jig`). The test
-then pings zed-b from the host computer through zed-a using the lightweight 
+then pings zed-b from the host computer through zed-a using the lightweight
 network protocol [LibCSP](https://github.com/libcsp/libcsp).
 
-Every checks result is printed in a report with the simulated time it ran at. Each
-run gets a fingerprint, a SHA-256 digest of everything it decided and
-measured in simulated time, so `jig run --repeat 3` proves a plan gives the
-same result three times, on any host.
+Every check's result is printed in a report with the simulated time it ran
+at. Each run gets a fingerprint, a SHA-256 digest of everything it decided
+and measured in simulated time, so `jig run --repeat 3` proves a plan gives
+the same result three times, on any host.
 
-Boards are data: a `board.yaml` names the platform (in this case the 
-[ZedBoard](https://www.avnet.com/americas/products/avnet-boards/avnet-board-families/zedboard/), 
-running  a Zynq-7020 SoC), the Renode platform description, the firmware and the interfaces 
-plans use. Users must bring their own C# models and Python plugins for any peripherals not directly
-supported by Zig.
+Boards are data: a `board.yaml` names the platform (in this case the
+[ZedBoard][zedboard], running a Zynq-7020 SoC), the Renode platform
+description, the firmware and the interfaces plans use. Users must bring
+their own C# models and Python plugins for any peripherals not directly
+supported by Jig.
+
+[zedboard]: https://www.avnet.com/americas/products/avnet-boards/avnet-board-families/zedboard/
 
 ## Requirements
 
