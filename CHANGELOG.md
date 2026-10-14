@@ -9,6 +9,8 @@ Breaking changes open with **Breaking** under Changed.
 
 ## [Unreleased]
 
+## [0.1.0a1] - 2026-10-13
+
 ### Added
 
 - The Jig plan language for `.jig` files: system declarations, setup, test
@@ -85,4 +87,5 @@ Breaking changes open with **Breaking** under Changed.
   releases through PyPI trusted publishing, and security scans, and
   Dependabot updates.
 
-[Unreleased]: https://github.com/GNPower/Jig/commits/main
+[Unreleased]: https://github.com/GNPower/Jig/compare/v0.1.0a1...HEAD
+[0.1.0a1]: https://github.com/GNPower/Jig/releases/tag/v0.1.0a1

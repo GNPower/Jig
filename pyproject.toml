@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jig-dsl"
-version = "0.1.0.dev0"
+version = "0.1.0a1"
 description = "A test language and harness for firmware running on the Renode emulator"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -163,7 +163,7 @@ plugins.md024.siblings_only = true
 # 0.1.0.dev0 -> (pre_l) 0.1.0a1 -> (pre_n) 0.1.0a2 -> (pre_l) 0.1.0b1 ->
 # 0.1.0rc1 -> 0.1.0 -> (patch) 0.1.1.dev1.
 [tool.bumpversion]
-current_version = "0.1.0.dev0"
+current_version = "0.1.0a1"
 parse = """(?x)
     (?P<major>0|[1-9]\\d*)\\.
     (?P<minor>0|[1-9]\\d*)\\.
