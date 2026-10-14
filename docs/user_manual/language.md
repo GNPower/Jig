@@ -13,7 +13,7 @@ system "two ZedBoards on CAN" {
     board a: "zed-a"
     board b: "zed-b"
     bus can0: can(bitrate: 1 Mbit/s, members: [a.can, b.can])
-    node ground: csp(address: 10, link: a.kiss)
+    node host: csp(address: 10, link: a.kiss)
 }
 
 setup {
@@ -23,8 +23,8 @@ setup {
     }
 }
 
-test "the ground station reads zed-b's status" [smoke] {
-    let status = ground.hk(b)
+test "the host computer reads zed-b's status" [smoke] {
+    let status = host.hk(b)
     check status.node == 2
 }
 ```

@@ -4,13 +4,13 @@
 [![Python versions](https://img.shields.io/pypi/pyversions/jig-dsl.svg)](https://pypi.org/project/jig-dsl/)
 [![Tests](https://github.com/GNPower/Jig/actions/workflows/ci.yml/badge.svg)](https://github.com/GNPower/Jig/actions/workflows/ci.yml)
 [![Coverage](https://codecov.io/gh/GNPower/Jig/branch/main/graph/badge.svg)](https://codecov.io/gh/GNPower/Jig)
-[![Documentation](https://readthedocs.org/projects/jig-dsl/badge/?version=latest)](https://jig-dsl.readthedocs.io/en/latest/)
+[![Documentation](https://readthedocs.org/projects/jig/badge/?version=latest)](https://jig.readthedocs.io/en/latest/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/GNPower/Jig/blob/main/LICENSE)
 
 **A test language and harness for firmware running on the Renode
 emulator.**
 
-Full documentation: <https://jig-dsl.readthedocs.io>
+Full documentation: <https://jig.readthedocs.io>
 
 ## Overview
 

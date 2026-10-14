@@ -1,4 +1,4 @@
-# Read the Docs build for https://jig-dsl.readthedocs.io. It installs this
+# Read the Docs build for https://jig.readthedocs.io. It installs this
 # checkout with the docs extra, so each documentation version comes from its
 # own commit, and fails on any Sphinx warning.
 version: 2

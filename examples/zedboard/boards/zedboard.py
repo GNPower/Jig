@@ -6,7 +6,7 @@ Registers:
 
 * the housekeeping codec ``zed-status``: the 36-byte status record the
   firmware sends from port 10 in answer to the 1-byte request 0x01, decoded
-  into a record (``ground.hk(a)``, ``can0.hk(b)``);
+  into a record (``host.hk(a)``, ``can0.hk(b)``);
 * the plan function ``cfp_frames(size)``: how many CAN frames CSP's CAN
   fragmentation protocol uses for a payload of ``size`` bytes;
 * the board member ``uptime()``: seconds since boot, from the console's

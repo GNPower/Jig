@@ -1,7 +1,7 @@
 blank_issues_enabled: false
 contact_links:
   - name: Documentation
-    url: https://jig-dsl.readthedocs.io
+    url: https://jig.readthedocs.io
     about: Tutorials, how-to guides and the reference for plans, boards and commands.
   - name: Security vulnerability
     url: https://github.com/GNPower/Jig/security/advisories/new

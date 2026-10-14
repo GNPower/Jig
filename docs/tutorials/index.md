@@ -1,7 +1,7 @@
 # Tutorials
 
 The tutorials build plans for the ZedBoard example, from one board on its
-own to two boards on a bus with a ground station, then to plans that run
+own to two boards on a bus with a host computer, then to plans that run
 work on a schedule. Each one needs the example's firmware built
 ({doc}`../getting_started/first_run`), and the plan each one builds is in
 the repository under `examples/zedboard/plans/`, so you can run the

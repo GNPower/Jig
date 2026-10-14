@@ -1,4 +1,4 @@
-"""External CSP nodes: the ground station on a KISS link, other subsystems on CAN.
+"""External CSP nodes: the host computer on a KISS link, other subsystems on CAN.
 
 A ``CspNode`` is a CSP endpoint the harness runs outside the emulated boards. It
 speaks libcsp 1.6's wire formats (``jig.ext.csp.protocol``) over
@@ -252,7 +252,7 @@ class CspNode:
         self.received: list[Received] = []  # packets that matched no connection
         self.serve_ping = True  # answer CSP pings on port 1, as a libcsp node does
         self.accept_broadcast = False  # also take packets sent to the broadcast address
-        self.link_up = True  # False: out of contact, traffic is lost both ways
+        self.link_up = True  # False: link down, traffic is lost both ways
         self.stats = NodeStats()
         self.trace = _Trace()
         if kiss is not None:
@@ -276,7 +276,7 @@ class CspNode:
     # ------------------------------------------------------------ reception
 
     def set_link(self, up: bool) -> None:
-        """Bring the node's link up or down (a ground station's contact window).
+        """Bring the node's link up or down (a cable unplugged and plugged back in).
 
         While it is down, what the node sends and what reaches it are lost; a
         frame cut by an outage is lost too, so reassembly starts over."""

@@ -1,11 +1,11 @@
 # One ZedBoard: zed-a's boot banner, its console commands, its uptime against
-# simulated time, and a ground station on its KISS link asking for a ping, the
+# simulated time, and a host computer on its KISS link asking for a ping, the
 # status record and the uptime in seconds. Tutorial 1 in the documentation
 # builds this plan step by step.
 
 system "one ZedBoard" {
     board a: "zed-a"
-    node ground: csp(address: 10, link: a.kiss)
+    node host: csp(address: 10, link: a.kiss)
 }
 
 procedure uptime_ms(board) {
@@ -40,14 +40,14 @@ test "uptime follows simulated time" {
     check after - before in 2000 .. 2500
 }
 
-test "the ground station pings zed-a" {
-    let rtt = ground.ping(a)
+test "the host computer pings zed-a" {
+    let rtt = host.ping(a)
     log "round trip {rtt * 1000:.1f} ms"
     check rtt < 20 ms
 }
 
 test "the status record names node 1" {
-    let reply = ground.request(a, 10, x"01")
+    let reply = host.request(a, 10, x"01")
     check len(reply) == 36
     check reply.startswith(x"5A454453")
     check reply[5] == 1
@@ -55,7 +55,7 @@ test "the status record names node 1" {
 
 test "port 6 answers the uptime in whole seconds" {
     let before = uptime_ms(a)
-    let reply = ground.request(a, 6)
+    let reply = host.request(a, 6)
     let after = uptime_ms(a)
     check len(reply) == 4
     let seconds = number("0x" + reply.hex())

@@ -1,20 +1,20 @@
 # A first run
 
 This page runs the ZedBoard example: two emulated ZedBoards on one CAN bus,
-and a ground station that reaches them over a serial link to the first. It
+and a host computer that reaches them over a serial link to the first. It
 assumes Jig and Renode are installed ({doc}`installation`, {doc}`renode`)
 and that `arm-none-eabi-gcc` is on `PATH`.
 
 ## The example system
 
 ```text
-ground station (10) <-- KISS, UART0, 115200 baud --> zed-a (1)
+host computer (10) <-- KISS, UART0, 115200 baud --> zed-a (1)
 zed-a (1) <-- CAN0, 1 Mbit/s --> zed-b (2)
 ```
 
 Both boards run the same bare-metal firmware on Cortex-A9 core 0, built
 twice with a different CSP address. zed-a forwards packets between its
-serial link and the bus, so the ground station reaches zed-b through it.
+serial link and the bus, so the host computer reaches zed-b through it.
 Each board has a console on UART1 with the prompt `zed>`. Each serves CSP
 ping on port 1, uptime on port 6 and a status record on port 10. The
 example's `README.md` gives the wire formats and the status layout.
@@ -69,7 +69,7 @@ both ELFs without a warning:
 compiler: /usr/bin/arm-none-eabi-gcc
           arm-none-eabi-gcc (15:13.2.rel1-2) 13.2.1 20231009
    text    data     bss     dec     hex filename
-  12972      88   37184   50244    c444 .../firmware/build/zed-node-1.elf
+  12968      88   37184   50240    c440 .../firmware/build/zed-node-1.elf
   11372      44   33836   45252    b0c4 .../firmware/build/zed-node-2.elf
 ```
 
@@ -89,7 +89,7 @@ searching up from the plan's directory, and the board definitions `zed-a`
 and `zed-b` through it. It starts Renode, builds one machine per board,
 loads each ELF the way a JTAG debugger would, connects both CAN controllers
 to one bus, and attaches a harness CSP node to zed-a's serial link as the
-ground station. Then it runs the plan's setup block and each test in
+host computer. Then it runs the plan's setup block and each test in
 order, all in one emulation.
 
 ```text
@@ -97,16 +97,16 @@ PLAN  examples\zedboard\plans\multiboard.jig
   board a: zed-a, jtag boot, 100 MIPS
   board b: zed-b, jtag boot, 100 MIPS
   bus can0: CAN 1e+06 bit/s, a.can, b.can
-  node ground: CSP 10 on link a.kiss
-  PASS  the ground station reaches zed-b through zed-a  (0.01 s)
-  PASS  the ground station pings both boards  (0.02 s)
+  node host: CSP 10 on link a.kiss
+  PASS  the host computer reaches zed-b through zed-a  (0.01 s)
+  PASS  the host computer pings both boards  (0.02 s)
   PASS  the boards ping each other from their consoles  (0.01 s)
   PASS  a 200-byte ping crosses the gateway in fragments  (0.05 s)
   PASS  both boards answer with their status  (0.03 s)
   PASS  the counters agree with what the bus carried  (0.03 s)
   PASS  pings stop during a link outage and resume after it  (4.81 s)
   PASS  zed-b waits for its debugger after a power cycle  (1.06 s)
-  8 passed, 0 failed, 0 errors (6.0 s simulated, 17.7 s wall); fingerprint 7e336f8fcf0140a9
+  8 passed, 0 failed, 0 errors (6.0 s simulated, 12.9 s wall); fingerprint 32996f04f7e70f0d
 ```
 
 That run was on Windows, and two log lines about Renode's start, which
@@ -123,7 +123,7 @@ step as it happens.
 The fingerprint covers everything the run decided and measured in
 simulated time, so it depends on what the firmware does and on nothing
 about the host. With ELFs built by GCC 13.2.1, `multiboard.jig` gives
-`7e336f8fcf0140a9` on Windows and on Linux. ELFs from GCC 12.2 (Vitis
+`32996f04f7e70f0d` on Windows and on Linux. ELFs from GCC 12.2 (Vitis
 2024.1) differ from those byte for byte and give the same fingerprint for
 each of the example's plans, because the firmware acts on its 1 ms timer
 tick; a change to what the firmware does or when, a different message or
@@ -188,7 +188,7 @@ jig boot zed-a --seconds 2
 
 ```text
 zed-a: CSP address 1 on a ZedBoard (Zynq-7020, Cortex-A9 core 0)
-links: can0 1000 kbit/s, CSP with 29-bit CFP identifiers; kiss on uart0 115200 baud to ground station 10
+links: can0 1000 kbit/s, CSP with 29-bit CFP identifiers; kiss on uart0 115200 baud to host computer 10
 console: uart1 115200 baud, type help
 zed>
 --- 2 s simulated in 0.5 s (4.00x real time); total 6.1 s

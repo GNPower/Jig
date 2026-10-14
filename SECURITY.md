@@ -51,4 +51,4 @@ What Jig does control:
 A report that explpoits one of these controls is in scope.
 
 The full model, with what each kind of local user can do, is in the
-documentation: <https://jig-dsl.readthedocs.io/en/latest/user_manual/bridge.html>.
+documentation: <https://jig.readthedocs.io/en/latest/user_manual/bridge.html>.

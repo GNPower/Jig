@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Graham Power
 #
-# Two ZedBoards on one CAN bus, and a TCP socket for the ground station.
+# Two ZedBoards on one CAN bus, and a TCP socket for the host computer.
 #
 #   zed-a  CSP address 1  zed-node-1.elf  CAN0, and KISS on UART0 (TCP port $kiss_port)
 #   zed-b  CSP address 2  zed-node-2.elf  CAN0
@@ -13,14 +13,14 @@
 # Build the firmware first (firmware/build.py), then from any directory:
 #     renode <path>/examples/zedboard/renode/two-boards.resc
 # and in a second terminal:
-#     python <path>/examples/zedboard/tools/ground.py
+#     python <path>/examples/zedboard/tools/host.py
 #
 # Set any of the variables below before including this script to change it.
 # The script needs a checkout of the Jig repository: it compiles Jig's models
 # from $jig_models and loads Jig's Zynq-7000 platform from $jig_platforms.
 
 :name: Two ZedBoards on CAN
-:description: zed-a and zed-b share CAN0; zed-a carries KISS to a ground station on a TCP socket.
+:description: zed-a and zed-b share CAN0; zed-a carries KISS to a host computer on a TCP socket.
 
 $jig_models?=$ORIGIN/../../../src/jig/models
 $jig_platforms?=$ORIGIN/../../../src/jig/platforms

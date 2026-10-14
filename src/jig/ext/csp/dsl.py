@@ -158,7 +158,7 @@ class CspDeclaration(NodeDeclaration):
 
 
 class NodeHandle:
-    """A CSP node the harness runs (a ground station, another subsystem)."""
+    """A CSP node the harness runs (a host computer, another subsystem)."""
 
     dsl_kind = "node"
     dsl_members = frozenset(
@@ -251,7 +251,7 @@ class NodeHandle:
         return self.node.link_up
 
     def link_up(self) -> None:
-        """Restore the node's link (a ground station acquiring the spacecraft)."""
+        """Restore the node's link (a cable plugged back in, a radio back in range)."""
         self._set_link(True)
 
     def link_down(self) -> None:

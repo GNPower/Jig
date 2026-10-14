@@ -2,8 +2,8 @@
 
 Two Digilent ZedBoards (Xilinx Zynq-7020, 512 MB of DDR3) run the bare-metal
 firmware in `firmware/` on Cortex-A9 core 0. They share one CAN bus, and a
-ground station reaches zed-a over a KISS serial link; zed-a relays the ground
-station's packets to zed-b and back. Every packet is CubeSat Space Protocol
+host computer reaches zed-a over a KISS serial link; zed-a relays the host
+computer's packets to zed-b and back. Every packet is CubeSat Space Protocol
 (CSP) in libcsp 1.6's wire format: its header, its KISS framing with a CRC-32C,
 and its CAN fragmentation protocol.
 
@@ -11,7 +11,7 @@ and its CAN fragmentation protocol.
 <!-- pyml disable md013-->
 
 ```text
-ground station (10) <-- KISS, UART0, 115200 baud --> zed-a (1) <-- CAN0, 1 Mbit/s --> zed-b (2)
+host computer (10) <-- KISS, UART0, 115200 baud --> zed-a (1) <-- CAN0, 1 Mbit/s --> zed-b (2)
 ```
 
 <!-- pyml enable md013-->
@@ -45,9 +45,9 @@ working directory, so run those inside `examples/zedboard`.
 | `boards/zedboard.py` | the board plugin both definitions name |
 | `lib/zed.jig` | `booted(board, address)`: wait for a board's banner and first prompt |
 | `plans/one_zedboard.jig` | zed-a on its own: banner, console commands, uptime against simulated time, ping, the status record as bytes, uptime in whole seconds on port 6 |
-| `plans/two_zedboards.jig` | both boards and the ground station: console pings over CAN, routed packets, a 200-byte ping in 26 frames each way, decoded status records, a ping nobody answers |
+| `plans/two_zedboards.jig` | both boards and the host computer: console pings over CAN, routed packets, a 200-byte ping in 26 frames each way, decoded status records, a ping nobody answers |
 | `plans/profiles_timelines.jig` | a status poll every second, pings whose size follows a ramp, pings across a link outage |
-| `plans/multiboard.jig` | both boards and the ground station: pings to 1 and 2, a 200-byte ping through zed-a, both status records, the frame and `routed` counters against what the bus carried, a link outage and recovery, a power cycle of zed-b |
+| `plans/multiboard.jig` | both boards and the host computer: pings to 1 and 2, a 200-byte ping through zed-a, both status records, the frame and `routed` counters against what the bus carried, a link outage and recovery, a power cycle of zed-b |
 | `tests/test_zedboard_plugin.py` | the plugin and the board definitions, without Renode: `python -m pytest examples/zedboard/tests` |
 
 <!-- pyml enable md013-->
@@ -61,7 +61,7 @@ first-run page runs `multiboard.jig`.
 `boards/zedboard.py` registers:
 
 - the housekeeping codec `zed-status`, which each board.yaml names in
-  `csp.housekeeping` with port 10 and the request `01`; `ground.hk(a)` and
+  `csp.housekeeping` with port 10 and the request `01`; `host.hk(a)` and
   `can0.hk(b)` return the status record below by field name;
 - the plan function `cfp_frames(size)`, the CAN frames of a CSP payload of
   `size` bytes: 26 for 200 bytes, 33 for 256;
@@ -94,20 +94,20 @@ jig run examples/zedboard/plans/*.jig --repeat 3 --junit out/zedboard.xml
 A run's fingerprint hashes what it decided and measured in simulated time, so it
 depends on what the firmware does and when. With the ELFs Ubuntu 24.04's GCC
 13.2.1 builds
-(SHA-256 `017b788e6aaf2bd710c6681ff5296d160d6001e24b88c95b6db287556dffd624` for
+(SHA-256 `ef3135ba80723e7c20eca1d6e7ff80128190d06a8573d516cba602e954c6c9e1` for
 `zed-node-1.elf`,
 `208bdc6e566e612e49d5ef14c14fac77f3ddebd8d7d7ba088914bd20969f40b9` for
 `zed-node-2.elf`), each plan gives one fingerprint on Windows and on Linux:
 
 | Plan | Tests | Simulated | Fingerprint |
 |---|---|---|---|
-| `one_zedboard.jig` | 6 | 4.0 s | `f84766f63cb63613` |
-| `two_zedboards.jig` | 5 | 0.6 s | `6155fca5eb9afcc9` |
-| `profiles_timelines.jig` | 3 | 23.4 s | `86b7a518a1183056` |
-| `multiboard.jig` | 8 | 6.0 s | `7e336f8fcf0140a9` |
+| `one_zedboard.jig` | 6 | 4.0 s | `848445d787d95a77` |
+| `two_zedboards.jig` | 5 | 0.6 s | `9b6d46e974fbfced` |
+| `profiles_timelines.jig` | 3 | 23.4 s | `3afb28c2182a55f7` |
+| `multiboard.jig` | 8 | 6.0 s | `32996f04f7e70f0d` |
 
 ELFs from GCC 12.2 (Vitis 2024.1 on Windows) differ from these byte for byte
-(`zed-node-1.elf` has 12932 bytes of text against 12972) and give the same four
+(`zed-node-1.elf` has 12928 bytes of text against 12968) and give the same four
 fingerprints: the firmware acts on its 1 ms tick, and the instructions the two
 compilers chose don't move any of its answers to another tick.
 
@@ -117,12 +117,12 @@ compilers chose don't move any of its answers to another tick.
 |---|---|---|---|---|
 | zed-a | 1 | `firmware/build/zed-node-1.elf` | CAN0; KISS on UART0 | UART1 |
 | zed-b | 2 | `firmware/build/zed-node-2.elf` | CAN0 | UART1 |
-| ground station | 10 | `tools/ground.py` | KISS to zed-a | |
+| host computer | 10 | `tools/host.py` | KISS to zed-a | |
 
 ## Routes and services
 
 zed-a sends packets for address 10 to KISS and every other address to CAN0.
-zed-b sends everything to CAN0, so its answers to the ground station cross the
+zed-b sends everything to CAN0, so its answers to the host computer cross the
 bus to zed-a, which forwards them on KISS. A node keeps packets for its own
 address and for the broadcast address 31, and never sends a packet back out on
 the link it arrived on.
@@ -189,7 +189,7 @@ All four follow libcsp 1.6.
 
 The CAN acceptance filters pass frames whose CFP destination is the node's own
 address or 31. zed-a also accepts destination 10, which is how zed-b's answers
-to the ground station reach it.
+to the host computer reach it.
 
 ## Console commands
 
@@ -201,7 +201,7 @@ prompt `zed>` and a space. At boot each board names itself and its links:
 
 ```text
 zed-a: CSP address 1 on a ZedBoard (Zynq-7020, Cortex-A9 core 0)
-links: can0 1000 kbit/s, CSP with 29-bit CFP identifiers; kiss on uart0 115200 baud to ground station 10
+links: can0 1000 kbit/s, CSP with 29-bit CFP identifiers; kiss on uart0 115200 baud to host computer 10
 console: uart1 115200 baud, type help
 zed>
 ```
@@ -296,7 +296,7 @@ Then the emulation starts.
 
 | TCP port | Connected to |
 |---|---|
-| 4560 | zed-a UART0: the KISS link for the ground station |
+| 4560 | zed-a UART0: the KISS link for the host computer |
 | 4561 | zed-a UART1: console |
 | 4562 | zed-b UART1: console |
 
@@ -305,10 +305,10 @@ The sockets carry raw bytes, so use a raw TCP client for a console, such as
 Renode's GUI each console also opens in an analyzer window. With
 `renode --disable-gui`, the analyzers write each console line to Renode's log.
 
-In a second terminal, run the ground station:
+In a second terminal, run the host computer:
 
 ```bash
-python examples/zedboard/tools/ground.py
+python examples/zedboard/tools/host.py
 ```
 
 It pings zed-a and zed-b, decodes both status answers, sends zed-b a 200-byte
@@ -320,7 +320,7 @@ direction. One run on Windows:
 <!-- pyml disable md013-->
 
 ```text
-ground station 10 on 127.0.0.1:4560
+host computer 10 on 127.0.0.1:4560
 ping 1: 32 of 32 bytes in 11.5 ms, payload intact (14 KISS escapes each way)
 ping 2: 32 of 32 bytes in 15.9 ms, payload intact (14 KISS escapes, 5 CAN frames each way)
 status 1: node 1, uptime 0.418 s, CAN sent 15 received 15 frames (TEC 0, REC 0), KISS sent 2 received 3 frames, routed 2, CRC errors 0
@@ -332,7 +332,7 @@ ping 2: 200 of 200 bytes in 62.0 ms, payload intact (80 KISS escapes, 26 CAN fra
 <!-- pyml enable md013-->
 <!-- markdownlint-enable MD013 -->
 
-The times are wall-clock and change from run to run. `ground.py` also takes
+The times are wall-clock and change from run to run. `host.py` also takes
 single commands, `ping 2 --size 256`, `status 1` and `uptime 2`, and `--host`
 and `--port` for the socket.
 
@@ -342,7 +342,7 @@ Set the script's variables before including it. In bash or PowerShell:
 
 ```bash
 renode -e '$kiss_port=5560; $console_a_port=5561; $console_b_port=5562; include @examples/zedboard/renode/two-boards.resc'
-python examples/zedboard/tools/ground.py --port 5560
+python examples/zedboard/tools/host.py --port 5560
 ```
 
 The other variables are `$zed_a_elf`, `$zed_b_elf`, `$jig_models` and
@@ -408,7 +408,7 @@ on MIO 14 and 15.
 | `plans/` | the Jig test plans |
 | `tests/` | tests of the plugin and the board definitions |
 | `renode/two-boards.resc` | both boards, the CAN bus and the sockets, in plain Renode |
-| `tools/ground.py` | the stand-alone ground station, standard library only |
+| `tools/host.py` | the stand-alone host computer, standard library only |
 
 <!-- pyml enable md013-->
 <!-- markdownlint-enable MD013 -->

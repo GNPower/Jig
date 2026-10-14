@@ -15,7 +15,7 @@ A plan file (`.jig`) declares a system and the blocks that test it:
   interfaces a plan talks to;
 - `bus` declarations that join boards' CAN controllers on one CAN bus;
 - `node` declarations for protocol endpoints the harness runs itself, such
-  as a CSP ground station on a board's serial link;
+  as a CSP host computer on a board's serial link;
 - `setup`, `test` and `teardown` blocks of statements: console commands and
   expectations, CSP requests, `check` conditions, waits, loops, parallel
   tasks and recorded measurements.

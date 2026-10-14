@@ -3,7 +3,7 @@
 The plans so far ran their steps one after another. This tutorial runs work
 on a fixed schedule with `every`, records values into series the HTML
 report plots, varies an input over time with a profile, and uses a
-timeline to cut the ground station's link part-way through a stream of
+timeline to cut the host computer's link part-way through a stream of
 pings.
 
 **Prerequisites**: {doc}`two_zedboards`.
@@ -21,7 +21,7 @@ system "two ZedBoards on CAN" {
     board a: "zed-a"
     board b: "zed-b"
     bus can0: can(bitrate: 1 Mbit/s, members: [a.can, b.can])
-    node ground: csp(address: 10, link: a.kiss)
+    node host: csp(address: 10, link: a.kiss)
 }
 
 setup {
@@ -38,7 +38,7 @@ setup {
 test "zed-b's counters over ten seconds" {
     let previous = none
     every 1 s for 10 s as i {
-        let status = ground.hk(b)
+        let status = host.hk(b)
         record uptime = status.uptime_ms / 1000
         record can_received = status.can_received
         if previous != none {
@@ -76,7 +76,7 @@ test "ping sizes follow a ramp" {
     let start = now()
     every 500 ms for 10 s {
         let bytes = round(size.at(now() - start))
-        let rtt = ground.ping(b, size: bytes)
+        let rtt = host.ping(b, size: bytes)
         record ping_bytes = bytes
         record ping_ms = rtt * 1000
         check rtt < 100 ms
@@ -106,7 +106,7 @@ test "pings across a link outage" {
         at 0 s as pinger {
             every 200 ms for 5 s {
                 try {
-                    ground.ping(a, timeout: 100 ms)
+                    host.ping(a, timeout: 100 ms)
                     answered += 1
                 } catch {
                     lost += 1
@@ -114,9 +114,9 @@ test "pings across a link outage" {
             }
         }
         at 2 s as outage {
-            ground.link_down()
+            host.link_down()
             wait 1 s
-            ground.link_up()
+            host.link_up()
         }
     }
     record answered = answered
@@ -129,7 +129,7 @@ test "pings across a link outage" {
 Each `at` entry runs as a task that starts at its offset from the start of
 the timeline, and the timeline ends when every entry has ended. Entries due
 at the same instant start in the order they are written. `link_down` cuts
-the ground station off: from then until `link_up`, it sends nothing and
+the host computer off: from then until `link_up`, it sends nothing and
 receives nothing, as at a loss of signal.
 
 The pinger's 25 iterations meet the one-second gap, and 6 pings time out:
@@ -176,8 +176,8 @@ test, and one started in `setup` runs for the whole plan.
 
 - Replace the ramp with `steps([[0, 16], [5, 200]])` and compare the
   plotted round trips.
-- Add `record lost_sent = ground.stats.lost_sent` after the timeline: it
-  counts the packets the ground station sent while its link was down, 5
+- Add `record lost_sent = host.stats.lost_sent` after the timeline: it
+  counts the packets the host computer sent while its link was down, 5
   here, the four in the middle of the outage and the one at 3 s.
 - Move the outage entry to `at 2100 ms`, off the pinger's 200 ms grid. The
   edges no longer meet a ping: 20 are answered and only the 5 sent during

@@ -47,14 +47,14 @@ static uint32_t cfp_id(uint32_t src, uint32_t dst, uint32_t type, uint32_t remai
 }
 
 // The acceptance filters pass frames addressed to this node, to the CSP
-// broadcast address and, on zed-a, to the ground station it relays for.
+// broadcast address and, on zed-a, to the host computer it relays for.
 bool cfp_init(void)
 {
     const uint32_t dst_mask = CFP_ADDRESS_MASK << CFP_DST_SHIFT;
     can_filter filters[3] = {
         { (uint32_t)NODE_ADDRESS << CFP_DST_SHIFT, dst_mask },
         { CSP_BROADCAST << CFP_DST_SHIFT, dst_mask },
-        { GROUND_ADDRESS << CFP_DST_SHIFT, dst_mask },
+        { HOST_ADDRESS << CFP_DST_SHIFT, dst_mask },
     };
     return can_init(filters, NODE_HAS_KISS ? 3u : 2u);
 }

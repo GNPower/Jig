@@ -9,14 +9,14 @@ simulated instant it ran at.
 ```{literalinclude} ../examples/zedboard/plans/multiboard.jig
 :language: jig
 :start-at: import "zed.jig"
-:end-before: test "the ground station pings both boards"
+:end-before: test "the host computer pings both boards"
 ```
 
 The plan above, the start of the example's `multiboard.jig`, puts two
 emulated ZedBoards (Digilent's board built on the Xilinx Zynq-7020) on one
-CAN bus and a ground station on a serial link to the first. Its setup waits
+CAN bus and a host computer on a serial link to the first. Its setup waits
 for both boards' boot banners; its test checks that a CSP ping from the
-ground station reaches the second board, and that the packet crossed the
+host computer reaches the second board, and that the packet crossed the
 bus. Nothing in it waits on the host's clock: `50 ms` is simulated time, so
 the same plan gives the same result on a laptop and on a CI runner.
 

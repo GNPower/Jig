@@ -141,15 +141,15 @@ because the first `cli` waited 0.3 s for quiet after the board answered.
 Procedures go at the top level of the plan, next to `setup` and the
 tests, and can take boards as arguments.
 
-## Step 4: Add a ground station
+## Step 4: Add a host computer
 
-The example's ground station is CSP node 10 on zed-a's serial link. Add
+The example's host computer is CSP node 10 on zed-a's serial link. Add
 one to the system, so the harness runs it:
 
 ```jig
 system "one ZedBoard" {
     board a: "zed-a"
-    node ground: csp(address: 10, link: a.kiss)
+    node host: csp(address: 10, link: a.kiss)
 }
 ```
 
@@ -157,14 +157,14 @@ The harness speaks KISS on that UART, adds the CRC-32C the firmware
 expects, and answers pings like a libcsp node. Two tests use it:
 
 ```jig
-test "the ground station pings zed-a" {
-    let rtt = ground.ping(a)
+test "the host computer pings zed-a" {
+    let rtt = host.ping(a)
     log "round trip {rtt * 1000:.1f} ms"
     check rtt < 20 ms
 }
 
 test "the status record names node 1" {
-    let reply = ground.request(a, 10, x"01")
+    let reply = host.request(a, 10, x"01")
     check len(reply) == 36
     check reply.startswith(x"5A454453")
     check reply[5] == 1
@@ -186,7 +186,7 @@ big-endian, as libcsp 1.6's uptime service does:
 ```jig
 test "port 6 answers the uptime in whole seconds" {
     let before = uptime_ms(a)
-    let reply = ground.request(a, 6)
+    let reply = host.request(a, 6)
     let after = uptime_ms(a)
     check len(reply) == 4
     let seconds = number("0x" + reply.hex())
@@ -208,14 +208,14 @@ jig run examples/zedboard/plans/one_zedboard.jig --html out/one_zedboard.html
 ```text
 PLAN  examples\zedboard\plans\one_zedboard.jig
   board a: zed-a, jtag boot, 100 MIPS
-  node ground: CSP 10 on link a.kiss
+  node host: CSP 10 on link a.kiss
   PASS  the console names the node and its links  (0.33 s)
   PASS  help lists every command  (0.33 s)
   PASS  uptime follows simulated time  (2.62 s)
-  PASS  the ground station pings zed-a  (0.01 s)
+  PASS  the host computer pings zed-a  (0.01 s)
   PASS  the status record names node 1  (0.01 s)
   PASS  port 6 answers the uptime in whole seconds  (0.63 s)
-  6 passed, 0 failed, 0 errors (4.0 s simulated, 11.5 s wall); fingerprint f84766f63cb63613
+  6 passed, 0 failed, 0 errors (4.0 s simulated, 10.8 s wall); fingerprint 848445d787d95a77
 
 report: ...\out\one_zedboard.html
 ```
@@ -245,8 +245,8 @@ named at the top of the page, under `examples/zedboard/out/runs/`, holds
 - Run with `--repeat 3`. The three runs print one fingerprint, and the
   plan ends with `repeatable: 3 runs, identical results`, because nothing
   in the plan depends on the host.
-- Run `jig run examples/zedboard/plans/one_zedboard.jig -k ground` to run
-  only the tests whose names contain `ground`; the other five are reported
+- Run `jig run examples/zedboard/plans/one_zedboard.jig -k host` to run
+  only the tests whose names contain `host`; the other five are reported
   as `SKIP`.
 
 ## Where to go next

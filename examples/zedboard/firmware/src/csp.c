@@ -32,14 +32,14 @@ csp_header csp_header_unpack(uint32_t word)
     return header;
 }
 
-// The routing table: zed-a sends the ground station's address to KISS and
+// The routing table: zed-a sends the host computer's address to KISS and
 // everything else to CAN; zed-b sends everything to CAN.
 csp_link csp_route_for(uint8_t dst)
 {
     if (dst == NODE_ADDRESS || dst == CSP_BROADCAST) {
         return LINK_LOCAL;
     }
-    if (NODE_HAS_KISS && dst == GROUND_ADDRESS) {
+    if (NODE_HAS_KISS && dst == HOST_ADDRESS) {
         return LINK_KISS;
     }
     return LINK_CAN;

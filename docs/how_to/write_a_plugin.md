@@ -90,7 +90,7 @@ csp:
   housekeeping: {port: 10, request: "01", codec: zed-status}
 ```
 
-`ground.hk(b)` in a plan now sends `0x01` to port 10 of zed-b and returns
+`host.hk(b)` in a plan now sends `0x01` to port 10 of zed-b and returns
 the decoded record, and `can0.hk(b)` decodes the records zed-b sent across
 the bus to anyone.
 
@@ -122,7 +122,7 @@ cfp_frames)`. A plan can then check a fragmented ping exactly:
 ```jig
 test "a 200-byte ping takes 26 frames each way" {
     let frames = can0.frames
-    ground.ping(b, size: 200)
+    host.ping(b, size: 200)
     check can0.frames - frames == 2 * cfp_frames(200)
 }
 ```

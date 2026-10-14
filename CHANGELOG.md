@@ -9,6 +9,14 @@ Breaking changes open with **Breaking** under Changed.
 
 ## [Unreleased]
 
+### Changed
+
+- The ZedBoard example calls CSP node 10 the host computer: plans name it
+  `host`, the stand-alone tool is `tools/host.py`, and zed-a's console
+  reports its KISS link as going to host computer 10. Each plan's
+  fingerprint changed with the new test names.
+- The documentation is at <https://jig.readthedocs.io>.
+
 ## [0.1.0a1] - 2026-10-13
 
 ### Added

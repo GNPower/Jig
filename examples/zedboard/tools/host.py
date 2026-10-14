@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Graham Power
-"""Ground station for the ZedBoard example.
+"""Host computer for the ZedBoard example.
 
 Connects to zed-a's KISS link (the TCP socket renode/two-boards.resc opens on
 port 4560) and speaks CSP 1.6 over KISS as CSP address 10. zed-a routes
@@ -170,7 +170,7 @@ class LinkError(Exception):
     pass
 
 
-class GroundStation:
+class HostComputer:
     def __init__(self, host: str, port: int, address: int, timeout: float, verbose: bool) -> None:
         self.host = host
         self.port = port
@@ -286,11 +286,11 @@ def cfp_frames(size: int) -> int:
     return (size + 6 - 1) // 8 + 1
 
 
-def ping(station: GroundStation, dst: int, size: int) -> bool:
+def ping(computer: HostComputer, dst: int, size: int) -> bool:
     payload = ping_payload(size)
-    _, body, seconds = station.request(dst, PORT_PING, payload)
+    _, body, seconds = computer.request(dst, PORT_PING, payload)
     intact = body == payload
-    escapes = kiss_escapes(Header(station.address, dst, PORT_PING, 0), payload)
+    escapes = kiss_escapes(Header(computer.address, dst, PORT_PING, 0), payload)
     links = f"{escapes} KISS escapes"
     if dst != 1:  # zed-a ends the KISS link; anything else is a CAN hop further
         links += f", {cfp_frames(size)} CAN frames"
@@ -300,28 +300,28 @@ def ping(station: GroundStation, dst: int, size: int) -> bool:
     return intact
 
 
-def status(station: GroundStation, dst: int) -> bool:
-    _, body, _ = station.request(dst, PORT_STATUS, STATUS_REQUEST)
+def status(computer: HostComputer, dst: int) -> bool:
+    _, body, _ = computer.request(dst, PORT_STATUS, STATUS_REQUEST)
     fields = decode_status(body)
     print(f"status {dst}: {format_status(fields)}")
     return fields["node"] == dst
 
 
-def uptime(station: GroundStation, dst: int) -> bool:
-    _, body, _ = station.request(dst, PORT_UPTIME, b"")
+def uptime(computer: HostComputer, dst: int) -> bool:
+    _, body, _ = computer.request(dst, PORT_UPTIME, b"")
     if len(body) != 4:
         raise LinkError(f"uptime answer has {len(body)} bytes, expected 4")
     print(f"uptime {dst}: {struct.unpack('>I', body)[0]} s")
     return True
 
 
-def demo(station: GroundStation) -> bool:
+def demo(computer: HostComputer) -> bool:
     checks: list[tuple[str, Callable[[], bool]]] = [
-        ("ping zed-a", lambda: ping(station, 1, 32)),
-        ("ping zed-b through zed-a", lambda: ping(station, 2, 32)),
-        ("status of zed-a", lambda: status(station, 1)),
-        ("status of zed-b", lambda: status(station, 2)),
-        ("200-byte ping to zed-b", lambda: ping(station, 2, 200)),
+        ("ping zed-a", lambda: ping(computer, 1, 32)),
+        ("ping zed-b through zed-a", lambda: ping(computer, 2, 32)),
+        ("status of zed-a", lambda: status(computer, 1)),
+        ("status of zed-b", lambda: status(computer, 2)),
+        ("200-byte ping to zed-b", lambda: ping(computer, 2, 200)),
     ]
     passed = 0
     for name, check in checks:
@@ -340,7 +340,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=4560, help="zed-a's KISS socket (default 4560)")
     parser.add_argument(
-        "--address", type=int, default=10, help="this station's CSP address (default 10)"
+        "--address", type=int, default=10, help="this computer's CSP address (default 10)"
     )
     parser.add_argument(
         "--timeout", type=float, default=5.0, help="seconds to wait for each answer"
@@ -356,23 +356,23 @@ def main(argv: list[str] | None = None) -> int:
             sub.add_argument("--size", type=int, default=32, help="payload bytes (default 32)")
     args = parser.parse_args(argv)
 
-    station = GroundStation(args.host, args.port, args.address, args.timeout, args.verbose)
+    computer = HostComputer(args.host, args.port, args.address, args.timeout, args.verbose)
     try:
-        station.connect(args.wait)
-        print(f"ground station {args.address} on {args.host}:{args.port}")
+        computer.connect(args.wait)
+        print(f"host computer {args.address} on {args.host}:{args.port}")
         if args.command in (None, "demo"):
-            ok = demo(station)
+            ok = demo(computer)
         elif args.command == "ping":
-            ok = ping(station, args.node, args.size)
+            ok = ping(computer, args.node, args.size)
         elif args.command == "status":
-            ok = status(station, args.node)
+            ok = status(computer, args.node)
         else:
-            ok = uptime(station, args.node)
+            ok = uptime(computer, args.node)
     except LinkError as error:
-        print(f"ground.py: {error}", file=sys.stderr)
+        print(f"host.py: {error}", file=sys.stderr)
         return 1
     finally:
-        station.close()
+        computer.close()
     return 0 if ok else 1
 
 

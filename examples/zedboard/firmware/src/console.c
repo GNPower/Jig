@@ -216,7 +216,7 @@ static void cmd_status(void)
                ecr & 0xFFu, (ecr >> 8) & 0xFFu);
     if (NODE_HAS_KISS) {
         con_printf("kiss     uart0, %u baud\r\n", UART_BAUD);
-        con_printf("routes   %u -> kiss, others -> can0\r\n", GROUND_ADDRESS);
+        con_printf("routes   %u -> kiss, others -> can0\r\n", HOST_ADDRESS);
     } else {
         con_printf("routes   all -> can0\r\n");
     }
@@ -362,7 +362,7 @@ void console_banner(uint32_t clock_faults, bool can_normal)
                (unsigned)NODE_ADDRESS);
     con_printf("links: can0 %u kbit/s, CSP with 29-bit CFP identifiers", CAN_BITRATE / 1000u);
     if (NODE_HAS_KISS) {
-        con_printf("; kiss on uart0 %u baud to ground station %u", UART_BAUD, GROUND_ADDRESS);
+        con_printf("; kiss on uart0 %u baud to host computer %u", UART_BAUD, HOST_ADDRESS);
     }
     con_printf("\r\nconsole: uart1 %u baud, type help\r\n", UART_BAUD);
     if ((clock_faults & CLOCK_ARM_PLL_UNLOCKED) != 0) {

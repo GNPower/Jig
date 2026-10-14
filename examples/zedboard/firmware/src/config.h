@@ -13,7 +13,7 @@
 
 #if NODE_ADDRESS == 1
 #define NODE_NAME           "zed-a"
-#define NODE_HAS_KISS       1       // UART0 carries the KISS link to the ground station
+#define NODE_HAS_KISS       1       // UART0 carries the KISS link to the host computer
 #elif NODE_ADDRESS == 2
 #define NODE_NAME           "zed-b"
 #define NODE_HAS_KISS       0
@@ -22,7 +22,7 @@
 #endif
 
 // CSP addresses and ports
-#define GROUND_ADDRESS      10u     // the ground station, reached over KISS through zed-a
+#define HOST_ADDRESS      10u     // the host computer, reached over KISS through zed-a
 #define CSP_BROADCAST       31u
 #define PORT_PING           1u
 #define PORT_UPTIME         6u

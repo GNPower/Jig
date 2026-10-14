@@ -1,5 +1,5 @@
-# Two ZedBoards on one CAN bus, with the ground station on zed-a's KISS link:
-# console pings between the boards, the ground station's packets crossing the
+# Two ZedBoards on one CAN bus, with the host computer on zed-a's KISS link:
+# console pings between the boards, the host computer's packets crossing the
 # bus, a ping that needs 26 CAN frames each way, the status records and a ping
 # that nobody answers. Tutorial 2 in the documentation builds this plan step
 # by step.
@@ -10,7 +10,7 @@ system "two ZedBoards on CAN" {
     board a: "zed-a"
     board b: "zed-b"
     bus can0: can(bitrate: 1 Mbit/s, members: [a.can, b.can])
-    node ground: csp(address: 10, link: a.kiss)
+    node host: csp(address: 10, link: a.kiss)
 }
 
 setup {
@@ -35,9 +35,9 @@ test "the boards ping each other over CAN" {
     }
 }
 
-test "zed-a forwards the ground station's packets to zed-b" {
-    check ground.ping(a) < 20 ms
-    check ground.ping(b) < 50 ms
+test "zed-a forwards the host computer's packets to zed-b" {
+    check host.ping(a) < 20 ms
+    check host.ping(b) < 50 ms
     let routes = can0.traffic().routes
     check routes["10->2:1"] == 1
     check not ("10->1:1" in routes)
@@ -46,7 +46,7 @@ test "zed-a forwards the ground station's packets to zed-b" {
 test "a 200-byte ping crosses the bus in fragments" {
     let start = now()
     let frames = can0.frames
-    let rtt = ground.ping(b, size: 200)
+    let rtt = host.ping(b, size: 200)
     log "{can0.frames - frames} CAN frames, {rtt * 1000:.1f} ms"
     check can0.frames - frames == 2 * cfp_frames(200)
     let requests = can0.packets(src: 10, dst: 2, since: start)
@@ -56,9 +56,9 @@ test "a 200-byte ping crosses the bus in fragments" {
 }
 
 test "zed-a counts the packets it forwards" {
-    let before = ground.hk(a)
-    ground.ping(b)
-    let after = ground.hk(a)
+    let before = host.hk(a)
+    host.ping(b)
+    let after = host.hk(a)
     check after.node == 1
     check after.routed - before.routed == 2
 }
@@ -66,7 +66,7 @@ test "zed-a counts the packets it forwards" {
 test "a ping to an absent node times out" {
     let answered = true
     try {
-        ground.ping(5, timeout: 500 ms)
+        host.ping(5, timeout: 500 ms)
     } catch error {
         answered = false
         log "{error.kind}: {error.message}"

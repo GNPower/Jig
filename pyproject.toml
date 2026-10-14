@@ -39,7 +39,7 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/GNPower/Jig"
-Documentation = "https://jig-dsl.readthedocs.io"
+Documentation = "https://jig.readthedocs.io"
 Repository = "https://github.com/GNPower/Jig"
 Issues = "https://github.com/GNPower/Jig/issues"
 Changelog = "https://github.com/GNPower/Jig/blob/main/CHANGELOG.md"

@@ -1,9 +1,9 @@
 # zed-a: a ZedBoard running the example firmware as CSP node 1. It carries the
-# ground station's KISS link on UART0 and forwards packets between that link
+# host computer's KISS link on UART0 and forwards packets between that link
 # and the CAN bus.
 schema: 2
 name: zed-a
-description: ZedBoard running the example firmware as CSP node 1, gateway to the ground station
+description: ZedBoard running the example firmware as CSP node 1, gateway to the host computer
 root: ../..                 # examples/zedboard: firmware paths start here
 soc: zynq7000
 soc_platform: xilinx/zynq7000

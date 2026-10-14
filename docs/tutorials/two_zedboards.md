@@ -1,8 +1,8 @@
-# Tutorial 2: Two ZedBoards on CAN with a ground station
+# Tutorial 2: Two ZedBoards on CAN with a host computer
 
-This tutorial puts zed-a and zed-b on one CAN bus, keeps the ground station
+This tutorial puts zed-a and zed-b on one CAN bus, keeps the host computer
 on zed-a's serial link, and follows packets across the bus: pings between
-the boards' consoles, pings the ground station sends through zed-a, a ping
+the boards' consoles, pings the host computer sends through zed-a, a ping
 large enough to need 26 CAN frames each way, and the status records each
 board keeps.
 
@@ -13,12 +13,12 @@ board keeps.
 The plan `examples/zedboard/plans/two_zedboards.jig`, for this system:
 
 ```text
-ground (10) <-- KISS on zed-a's UART0 --> zed-a (1) <-- can0 --> zed-b (2)
+host (10) <-- KISS on zed-a's UART0 --> zed-a (1) <-- can0 --> zed-b (2)
 ```
 
 zed-a sends packets for address 10 to its serial link and every other
 packet to the bus. zed-b sends everything to the bus. A packet from the
-ground station to zed-b therefore crosses the bus once each way, with
+host computer to zed-b therefore crosses the bus once each way, with
 zed-a forwarding it.
 
 ## Step 1: Declare two boards and a bus
@@ -30,7 +30,7 @@ system "two ZedBoards on CAN" {
     board a: "zed-a"
     board b: "zed-b"
     bus can0: can(bitrate: 1 Mbit/s, members: [a.can, b.can])
-    node ground: csp(address: 10, link: a.kiss)
+    node host: csp(address: 10, link: a.kiss)
 }
 
 setup {
@@ -91,12 +91,12 @@ times its pings with its 1 ms tick. `send` returns at once and `expect`
 waits for the reply line itself; `cli` would return once the console had
 been quiet for 0.3 s, which a slow reply outlasts.
 
-## Step 3: Follow the ground station's packets
+## Step 3: Follow the host computer's packets
 
 ```jig
-test "zed-a forwards the ground station's packets to zed-b" {
-    check ground.ping(a) < 20 ms
-    check ground.ping(b) < 50 ms
+test "zed-a forwards the host computer's packets to zed-b" {
+    check host.ping(a) < 20 ms
+    check host.ping(b) < 50 ms
     let routes = can0.traffic().routes
     check routes["10->2:1"] == 1
     check not ("10->1:1" in routes)
@@ -113,8 +113,8 @@ port. After this test it reads:
 {1->2:1: 1, 1->2:49: 1, 2->1:1: 1, 2->1:49: 1, 2->10:26: 1, 10->2:1: 1}
 ```
 
-`10->2:1` is the ground station's ping to zed-b and `2->10:26` zed-b's
-answer, sent to the port the ground station's request came from. The
+`10->2:1` is the host computer's ping to zed-b and `2->10:26` zed-b's
+answer, sent to the port the host computer's request came from. The
 other four are the console pings of step 2. The ping to zed-a never
 touches the bus, so `10->1:1` is missing.
 
@@ -130,7 +130,7 @@ function `cfp_frames`:
 test "a 200-byte ping crosses the bus in fragments" {
     let start = now()
     let frames = can0.frames
-    let rtt = ground.ping(b, size: 200)
+    let rtt = host.ping(b, size: 200)
     log "{can0.frames - frames} CAN frames, {rtt * 1000:.1f} ms"
     check can0.frames - frames == 2 * cfp_frames(200)
     let requests = can0.packets(src: 10, dst: 2, since: start)
@@ -151,14 +151,14 @@ packet. The run directory keeps every packet the bus carried in
 
 The board plugin also registers a decoder for the 36-byte status record,
 and each board definition names it as the board's housekeeping codec on
-port 10 (`csp.housekeeping` in board.yaml). `ground.hk(board)` sends the
+port 10 (`csp.housekeeping` in board.yaml). `host.hk(board)` sends the
 request and returns the decoded record:
 
 ```jig
 test "zed-a counts the packets it forwards" {
-    let before = ground.hk(a)
-    ground.ping(b)
-    let after = ground.hk(a)
+    let before = host.hk(a)
+    host.ping(b)
+    let after = host.hk(a)
     check after.node == 1
     check after.routed - before.routed == 2
 }
@@ -179,7 +179,7 @@ where nothing answers:
 test "a ping to an absent node times out" {
     let answered = true
     try {
-        ground.ping(5, timeout: 500 ms)
+        host.ping(5, timeout: 500 ms)
     } catch error {
         answered = false
         log "{error.kind}: {error.message}"
@@ -203,8 +203,8 @@ two_zedboards.jig:69:9: <plain connection 10:31 -> 5:1>: no reply within
 
 ## Experiment
 
-- Add `log text(ground.stats)` at the end of a test to see the ground
-  station's counters: packets sent and received, CRC errors,
+- Add `log text(host.stats)` at the end of a test to see the host
+  computer's counters: packets sent and received, CRC errors,
   retransmissions.
 - Change the bus bit rate to `500 kbit/s`. The firmware still runs its
   controller at 1 Mbit/s, so the bus drops every frame and

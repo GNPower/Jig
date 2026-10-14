@@ -135,7 +135,7 @@ class JigLexer(RegexLexer):  # type: ignore[misc,unused-ignore]
     """Lexer for Jig test plans."""
 
     name = "Jig"
-    url = "https://jig-dsl.readthedocs.io"
+    url = "https://jig.readthedocs.io"
     aliases = ("jig",)
     filenames = ("*.jig",)
     mimetypes = ("text/x-jig",)

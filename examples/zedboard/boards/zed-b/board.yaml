@@ -1,5 +1,5 @@
 # zed-b: a ZedBoard running the example firmware as CSP node 2. Its only link is
-# the CAN bus; the ground station reaches it through zed-a.
+# the CAN bus; the host computer reaches it through zed-a.
 schema: 2
 name: zed-b
 description: ZedBoard running the example firmware as CSP node 2, on the CAN bus only
