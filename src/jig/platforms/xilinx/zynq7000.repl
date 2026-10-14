@@ -1,0 +1,160 @@
+// Zynq-7000 processing system (CPU0, interrupt controller, timers, PS peripherals,
+// OCM, BootROM), built from Jig models where Renode's own are missing or differ
+// from the silicon as Xilinx UG585 describes it.
+//
+// A board file includes this one, then supplies every clock frequency (they come
+// from the design's ps7_init; `jig check` compares them with the XSA), the
+// boot-mode straps, the memories behind the PL, the PL peripherals and the
+// external devices.
+//
+// Interrupts: shared peripheral interrupt ID N connects to gic@(N-32), private
+// peripheral interrupt ID N to gic#0@N (UG585 table 7-3 and 7-4).
+//
+// CPU1 is not modelled: the BootROM parks it in a WFE loop and nothing here
+// starts it.
+
+cpu0: CPU.ARMv7A @ sysbus
+    cpuType: "cortex-a9"
+    cpuId: 0
+    genericInterruptController: gic
+
+gic: IRQControllers.ARM_GenericInterruptController @ {
+        sysbus new Bus.BusMultiRegistration { address: 0xF8F01000; size: 0x1000; region: "distributor" };
+        sysbus new Bus.BusMultiRegistration { address: 0xF8F00100; size: 0x100; region: "cpuInterface" }
+    }
+    supportsTwoSecurityStates: false
+    architectureVersion: .GICv1
+    CPUInterfaceProductIdentifier: 0x390
+    CPUInterfaceRevision: 0x2
+    CPUInterfaceImplementer: 0x43B
+
+scu: Miscellaneous.ArmSnoopControlUnit @ sysbus 0xF8F00000
+
+pmu: Miscellaneous.ArmPerformanceMonitoringUnit @ cpu0
+    -> gic@5
+
+// CPU_3x2x clocks the global timer and the private timer & watchdog.
+globalTimer: Jig.Arm.CortexA9GlobalTimer @ sysbus <0xF8F00200, +0x100>
+    0 -> gic#0@27
+
+privateTimer: Jig.Arm.CortexA9PrivateTimerWatchdog @ {
+        sysbus new Bus.BusPointRegistration { address: 0xF8F00600; cpu: cpu0 }
+    }
+    resetController: slcr
+    TimerIRQ -> gic#0@29
+    WatchdogIRQ -> gic#0@30
+
+l2cache: Jig.Arm.PL310 @ sysbus <0xF8F02000, +0x1000>
+
+slcr: Jig.Xilinx.Zynq7000_SLCR @ sysbus <0xF8000000, +0x1000>
+
+ttc0: Timers.Cadence_TTC @ sysbus 0xF8001000
+    [0-2] -> gic@[10-12]
+
+ttc1: Timers.Cadence_TTC @ sysbus 0xF8002000
+    [0-2] -> gic@[37-39]
+
+dma: DMA.PL330_DMA @ sysbus 0xF8003000
+    numberOfSupportedEventsAndInterrupts: 16
+    numberOfSupportedPeripheralRequestInterfaces: 4
+    AbortIRQ -> gic@13
+    [0-3] -> gic@[14-17]
+    [4-7] -> gic@[40-43]
+
+swdt: Jig.Cadence.CadenceWDT @ sysbus <0xF8005000, +0x1000>
+    resetController: slcr
+    -> gic@9
+
+ddrc: Jig.Xilinx.Zynq7000_DDRC @ sysbus <0xF8006000, +0x1000>
+
+devc: Jig.Xilinx.Zynq7000_DevC @ sysbus <0xF8007000, +0x100>
+    slcr: slcr
+    -> gic@8
+
+xadc: Analog.Xilinx_XADC @ sysbus 0xF8007100
+    -> gic@7
+
+efuse: Jig.Xilinx.Zynq7000_EFuse @ sysbus <0xF800D000, +0x1000>
+
+uart0: Jig.Cadence.CadenceUART @ sysbus <0xE0000000, +0x1000>
+    -> gic@27
+
+uart1: Jig.Cadence.CadenceUART @ sysbus <0xE0001000, +0x1000>
+    -> gic@50
+
+i2c0: I2C.Cadence_I2C @ sysbus 0xE0004000
+    -> gic@25
+
+i2c1: I2C.Cadence_I2C @ sysbus 0xE0005000
+    -> gic@48
+
+spi0: Jig.Cadence.CadenceSPI @ sysbus <0xE0006000, +0x1000>
+    -> gic@26
+
+spi1: Jig.Cadence.CadenceSPI @ sysbus <0xE0007000, +0x1000>
+    -> gic@49
+
+can0: Jig.Xilinx.Zynq7000_CAN @ sysbus <0xE0008000, +0x1000>
+    -> gic@28
+
+can1: Jig.Xilinx.Zynq7000_CAN @ sysbus <0xE0009000, +0x1000>
+    -> gic@51
+
+gpio: Jig.Xilinx.Zynq7000_GPIO @ sysbus <0xE000A000, +0x1000>
+    IRQ -> gic@20
+
+qspi: Jig.Xilinx.Zynq7000_QSPI @ {
+        sysbus new Bus.BusMultiRegistration { address: 0xE000D000; size: 0x1000; region: "registers" };
+        sysbus new Bus.BusMultiRegistration { address: 0xFC000000; size: 0x2000000; region: "linear" }
+    }
+    slcr: slcr
+    -> gic@19
+
+// OCM as the BootROM leaves it: three 64 KB blocks at 0x0, the fourth at the top.
+ocmLow: Memory.MappedMemory @ sysbus 0x0
+    size: 0x30000
+
+ocmHigh: Memory.MappedMemory @ sysbus 0xFFFF0000
+    size: 0x10000
+
+bootrom: Jig.Xilinx.Zynq7000_BootROM @ sysbus
+    cpu: cpu0
+    slcr: slcr
+    devc: devc
+    qspi: qspi
+    systemWatchdog: swdt
+    ocmLow: ocmLow
+    ocmHigh: ocmHigh
+
+pl: Jig.Xilinx.Zynq7000_PlDomain @ sysbus
+    devc: devc
+    slcr: slcr
+    cpu: cpu0
+
+// Peripheral software resets (UG585 B.28 SPI_RST_CTRL, CAN_RST_CTRL,
+// UART_RST_CTRL, GPIO_RST_CTRL): a write that sets one of a controller's AMBA
+// or reference-clock reset bits resets it. The QSPI controller follows
+// LQSPI_RST_CTRL through its slcr parameter. A board file adding its own slcr
+// init commands writes "init add:" to keep these.
+slcr:
+    init:
+        AddResetTarget spi0 0x21C 0x5
+        AddResetTarget spi1 0x21C 0xA
+        AddResetTarget can0 0x220 0x1
+        AddResetTarget can1 0x220 0x2
+        AddResetTarget uart0 0x228 0x5
+        AddResetTarget uart1 0x228 0xA
+        AddResetTarget gpio 0x22C 0x1
+
+sysbus:
+    init:
+        LimitGicPriorityBits gic 5
+        IgnoreGicHandlingModelBits gic
+        Tag <0xE0002000, 0xE0002FFF> "USB0 (not modelled)"
+        Tag <0xE0003000, 0xE0003FFF> "USB1 (not modelled)"
+        Tag <0xE000B000, 0xE000BFFF> "GEM0 (not modelled)"
+        Tag <0xE000C000, 0xE000CFFF> "GEM1 (not modelled)"
+        Tag <0xE000E000, 0xE000EFFF> "SMC (not modelled)"
+        Tag <0xE0100000, 0xE0100FFF> "SDIO0 (not modelled)"
+        Tag <0xE0101000, 0xE0101FFF> "SDIO1 (not modelled)"
+        Tag <0xF8800000, 0xF88FFFFF> "CoreSight (not modelled)"

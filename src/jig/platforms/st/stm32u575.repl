@@ -1,0 +1,49 @@
+// STMicroelectronics STM32U575 (2 MB flash, 784 KB in SRAM1 to SRAM4): the STM32U5 core and
+// peripherals of st/stm32u5.repl plus this part's memories. Sizes and addresses
+// from ST RM0456 and ST's CMSIS device header stm32u575xx.h.
+
+// Resolved through Renode's search path, which a Jig session sets to Jig's
+// platform directory
+using "st/stm32u5.repl"
+
+// Embedded flash: 2 MB in two 1 MB banks of 8 KB pages
+flash: Memory.MappedMemory @ sysbus 0x08000000
+    size: 0x200000
+
+// Flash interface registers. The STM32WBA controller has no NSCR.BKER and a
+// 7-bit PNB, so a page erase always lands in bank 1 (page PNB mod 128). Erased
+// bytes read 0xFF.
+flashController: MTD.STM32WBA_FlashController @ sysbus 0x40022000
+    flash: flash
+    NonSecureInterrupt -> nvic@6
+
+// SRAM1 (192 KB), also at its C-bus alias 0x0A000000 for code executed from
+// SRAM. The C-bus aliases of SRAM2 and SRAM3 are not mapped.
+sram1: Memory.MappedMemory @ {
+        sysbus 0x20000000;
+        sysbus 0x0A000000
+    }
+    size: 0x30000
+
+sram2: Memory.MappedMemory @ sysbus 0x20030000
+    size: 0x10000
+
+sram3: Memory.MappedMemory @ sysbus 0x20040000
+    size: 0x80000
+
+sram4: Memory.MappedMemory @ sysbus 0x28000000
+    size: 0x4000
+
+// System memory words that software reads: FLASHSIZE at 0x0BFA07A0 (flash size
+// in KB, 2048) and the temperature sensor calibration words TS_CAL1 at
+// 0x0BFA0710 and TS_CAL2 at 0x0BFA0742 (14-bit ADC codes at Vref+ = 3.0 V that
+// ST's LL driver, __LL_ADC_CALC_TEMPERATURE, relates to 30 and 130 degrees
+// Celsius). The calibration words are stand-ins, not values read from a device;
+// they are nonzero and in rising order so that the temperature formula has a
+// finite slope.
+sysmem: Memory.MappedMemory @ sysbus 0x0BFA0000
+    size: 0x1000
+    init:
+        WriteWord 0x7A0 0x0800
+        WriteWord 0x710 0x1000
+        WriteWord 0x742 0x1590

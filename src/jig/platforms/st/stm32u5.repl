@@ -1,0 +1,254 @@
+// STMicroelectronics STM32U5 series: the core and the peripherals the STM32U575
+// and STM32U595 have at the same addresses. Load it through st/stm32u575.repl
+// or st/stm32u595.repl, which add the memories, the flash interface and the
+// system-memory words that differ between the two.
+//
+// Addresses are the non-secure aliases and IRQ numbers the NVIC positions,
+// from ST RM0456 (memory map and vector table) and ST's CMSIS device headers
+// stm32u575xx.h and stm32u595xx.h. Blocks Renode 1.17.0 has no STM32U5 model
+// for reuse its STM32WBA ones (the same ST IP at the same addresses) or Jig's
+// models in the Jig.ST namespace (src/jig/models/ST), which a Jig session
+// compiles before it loads a platform.
+
+cpu: CPU.CortexM @ sysbus
+    cpuType: "cortex-m33"
+    nvic: nvic
+    // 160 MHz is the series' maximum SYSCLK; one instruction per cycle
+    PerformanceInMips: 160
+
+// Four priority bits (RM0456 NVIC). SysTick counts at 32 kHz: RCC_CCIPR1.SYSTICKSEL
+// selects LSI for the external reference while SysTick CTRL.CLKSOURCE selects
+// it, and Renode's NVIC has a single SysTick frequency whatever CLKSOURCE says.
+// Firmware that clocks SysTick from the core sets systickFrequency to HCLK.
+nvic: IRQControllers.NVIC @ sysbus 0xE000E000
+    priorityMask: 0xF0
+    systickFrequency: 32000
+    IRQ -> cpu@0
+    // AIRCR.SYSRESETREQ resets the machine through the RCC, which records it
+    // as a software reset in RCC_CSR
+    SystemResetRequest -> rcc@0
+
+dwt: Miscellaneous.DWT @ sysbus 0xE0001000
+    frequency: 160000000
+
+// Reset and clock control. A power-on reset and RCC_BDCR.BDRST reset the backup
+// domain: RCC_BDCR itself, the RTC and TAMP. A system reset leaves all three.
+rcc: Jig.ST.STM32U5_RCC @ sysbus 0x46020C00
+    BackupDomainReset -> rtc@0 | tamp@0
+
+pwr: Miscellaneous.STM32WBA_PWR @ sysbus 0x46020800
+
+exti: IRQControllers.STM32WBA_EXTI @ sysbus 0x46022000
+    numberOfOutputLines: 16
+    [0-15] -> nvic@[11-26]
+
+iwdg: Timers.STM32_IndependentWatchdog @ sysbus 0x40003000
+    frequency: 32000
+    windowOption: true
+    defaultPrescaler: 0
+
+// LPTIM1 and LPTIM2 count at 32768 Hz, the LSE frequency, as when
+// RCC_CCIPR3.LPTIM1SEL and RCC_CCIPR1.LPTIM2SEL select LSE
+lptim1: Jig.ST.STM32U5_LPTIM @ sysbus 0x46004400
+    frequency: 32768
+    IRQ -> nvic@67
+
+lptim2: Jig.ST.STM32U5_LPTIM @ sysbus 0x40009400
+    frequency: 32768
+    IRQ -> nvic@68
+
+// RTC and TAMP, in the backup domain: the calendar and the backup registers
+// survive system resets and are lost at power-on. RTCCLK is LSE, 32768 Hz.
+rtc: Jig.ST.STM32U5_RTC @ sysbus 0x46007800
+    frequency: 32768
+    IRQ -> nvic@2
+
+tamp: Jig.ST.STM32U5_TAMP @ sysbus 0x46007C00
+
+// ADC4 with a 3.3 V reference; inputs set with SetChannelVoltage stay across resets
+adc4: Jig.ST.STM32U5_ADC4 @ sysbus 0x46021000
+    referenceVoltage: 3.3
+    externalEventFrequency: 1000
+    -> nvic@113
+
+usart1: UART.STM32F7_USART @ sysbus 0x40013800
+    frequency: 160000000
+    IRQ -> nvic@61
+
+usart2: UART.STM32F7_USART @ sysbus 0x40004400
+    frequency: 160000000
+    IRQ -> nvic@62
+
+usart3: UART.STM32F7_USART @ sysbus 0x40004800
+    frequency: 160000000
+    IRQ -> nvic@63
+
+uart4: UART.STM32F7_USART @ sysbus 0x40004C00
+    frequency: 160000000
+    IRQ -> nvic@64
+
+uart5: UART.STM32F7_USART @ sysbus 0x40005000
+    frequency: 160000000
+    IRQ -> nvic@65
+
+lpuart1: UART.STM32F7_USART @ sysbus 0x46002400
+    frequency: 160000000
+    lowPowerMode: true
+    IRQ -> nvic@66
+
+i2c1: I2C.STM32F7_I2C @ sysbus 0x40005400
+    EventInterrupt -> nvic@55
+    ErrorInterrupt -> nvic@56
+
+i2c2: I2C.STM32F7_I2C @ sysbus 0x40005800
+    EventInterrupt -> nvic@57
+    ErrorInterrupt -> nvic@58
+
+i2c3: I2C.STM32F7_I2C @ sysbus 0x46002800
+    EventInterrupt -> nvic@88
+    ErrorInterrupt -> nvic@89
+
+i2c4: I2C.STM32F7_I2C @ sysbus 0x40008400
+    EventInterrupt -> nvic@101
+    ErrorInterrupt -> nvic@100
+
+// Full-duplex transfers to one attached device. Renode's STM32WBA_SPI has no
+// simplex receive (SPI_CFG2.COMM), so a receive-only transfer never completes.
+spi1: SPI.STM32WBA_SPI @ sysbus 0x40013000
+    IRQ -> nvic@59
+
+spi2: SPI.STM32WBA_SPI @ sysbus 0x40003800
+    IRQ -> nvic@60
+
+spi3: SPI.STM32WBA_SPI @ sysbus 0x46002000
+    IRQ -> nvic@99
+
+// FDCAN1 and its message RAM (SRAMCAN); FDCAN_CONFIG.CKDIV is the model's
+// offset 0x100
+fdcanRAM: Memory.ArrayMemory @ sysbus 0x4000AC00
+    size: 0x400
+
+fdcan1: Jig.ST.STM32U5_FDCAN @ sysbus 0x4000A400
+    messageRam: fdcanRAM
+    Int0 -> nvic@39
+    Int1 -> nvic@40
+
+timer1: Timers.STM32_Timer @ sysbus 0x40012C00
+    frequency: 160000000
+    initialLimit: 0xFFFF
+    BreakInterrupt -> nvic@41
+    UpdateInterrupt -> nvic@42
+    [TriggerInterrupt, CommutationInterrupt] -> nvic@[43, 43]
+    CaptureCompareInterrupt -> nvic@44
+
+timer2: Timers.STM32_Timer @ sysbus 0x40000000
+    frequency: 160000000
+    initialLimit: 0xFFFFFFFF
+    -> nvic@45
+
+timer3: Timers.STM32_Timer @ sysbus 0x40000400
+    frequency: 160000000
+    initialLimit: 0xFFFFFFFF
+    -> nvic@46
+
+timer4: Timers.STM32_Timer @ sysbus 0x40000800
+    frequency: 160000000
+    initialLimit: 0xFFFFFFFF
+    -> nvic@47
+
+timer5: Timers.STM32_Timer @ sysbus 0x40000C00
+    frequency: 160000000
+    initialLimit: 0xFFFFFFFF
+    -> nvic@48
+
+timer6: Timers.STM32_Timer @ sysbus 0x40001000
+    frequency: 160000000
+    initialLimit: 0xFFFF
+    -> nvic@49
+
+timer7: Timers.STM32_Timer @ sysbus 0x40001400
+    frequency: 160000000
+    initialLimit: 0xFFFF
+    -> nvic@50
+
+timer8: Timers.STM32_Timer @ sysbus 0x40013400
+    frequency: 160000000
+    initialLimit: 0xFFFF
+    BreakInterrupt -> nvic@51
+    UpdateInterrupt -> nvic@52
+    [TriggerInterrupt, CommutationInterrupt] -> nvic@[53, 53]
+    CaptureCompareInterrupt -> nvic@54
+
+timer15: Timers.STM32_Timer @ sysbus 0x40014000
+    frequency: 160000000
+    initialLimit: 0xFFFF
+    -> nvic@69
+
+timer16: Timers.STM32_Timer @ sysbus 0x40014400
+    frequency: 160000000
+    initialLimit: 0xFFFF
+    -> nvic@70
+
+timer17: Timers.STM32_Timer @ sysbus 0x40014800
+    frequency: 160000000
+    initialLimit: 0xFFFF
+    -> nvic@71
+
+// GPIO ports A to I. MODER, OSPEEDR and PUPDR reset values as in Renode's
+// stm32l552.repl (JTAG/SWD pins PA13 to PA15, PB3 and PB4 in alternate-function
+// mode); each port feeds the EXTI line selection (EXTI_EXTICRx) as input #port
+gpioPortA: GPIOPort.STM32_GPIOPort @ sysbus <0x42020000, +0x400>
+    modeResetValue: 0xABFFFFFF
+    outputSpeedResetValue: 0x0C000000
+    pullUpPullDownResetValue: 0x64000000
+    numberOfAFs: 16
+    [0-15] -> exti#0@[0-15]
+
+gpioPortB: GPIOPort.STM32_GPIOPort @ sysbus <0x42020400, +0x400>
+    modeResetValue: 0xFFFFFEBF
+    pullUpPullDownResetValue: 0x00000100
+    numberOfAFs: 16
+    [0-15] -> exti#1@[0-15]
+
+gpioPortC: GPIOPort.STM32_GPIOPort @ sysbus <0x42020800, +0x400>
+    modeResetValue: 0xFFFFFFFF
+    numberOfAFs: 16
+    [0-15] -> exti#2@[0-15]
+
+gpioPortD: GPIOPort.STM32_GPIOPort @ sysbus <0x42020C00, +0x400>
+    modeResetValue: 0xFFFFFFFF
+    numberOfAFs: 16
+    [0-15] -> exti#3@[0-15]
+
+gpioPortE: GPIOPort.STM32_GPIOPort @ sysbus <0x42021000, +0x400>
+    modeResetValue: 0xFFFFFFFF
+    numberOfAFs: 16
+    [0-15] -> exti#4@[0-15]
+
+gpioPortF: GPIOPort.STM32_GPIOPort @ sysbus <0x42021400, +0x400>
+    modeResetValue: 0xFFFFFFFF
+    numberOfAFs: 16
+    [0-15] -> exti#5@[0-15]
+
+gpioPortG: GPIOPort.STM32_GPIOPort @ sysbus <0x42021800, +0x400>
+    modeResetValue: 0xFFFFFFFF
+    numberOfAFs: 16
+    [0-15] -> exti#6@[0-15]
+
+gpioPortH: GPIOPort.STM32_GPIOPort @ sysbus <0x42021C00, +0x400>
+    modeResetValue: 0xFFFFFFFF
+    numberOfAFs: 16
+    [0-15] -> exti#7@[0-15]
+
+gpioPortI: GPIOPort.STM32_GPIOPort @ sysbus <0x42022000, +0x400>
+    modeResetValue: 0xFFFFFFFF
+    numberOfAFs: 16
+    [0-15] -> exti#8@[0-15]
+
+sysbus:
+    init:
+        // RAMCFG: reads 0, so CR.SRAMER reads as "erase done" at once; ECC and
+        // the SRAM erase itself are not modelled
+        Tag <0x40026000 0x400> "RAMCFG" 0x0 false true
+        // DBGMCU: debug freeze and low-power debug bits, write-only for software
+        Tag <0xE0044000 0x400> "DBGMCU" 0x0 false true
