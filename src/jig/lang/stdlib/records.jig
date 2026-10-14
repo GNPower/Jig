@@ -1,0 +1,9 @@
+# Counting records (packets, housekeeping replies) in simulated time.
+#
+#   import "std:records.jig"
+
+# How many of `records` (each with a `time`) fall from `start` up to, not
+# including, `end` (simulated seconds).
+procedure count_during(records, start, end) {
+    return len(during(records, start, end))
+}

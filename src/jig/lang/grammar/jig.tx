@@ -1,0 +1,322 @@
+/*
+ * Jig plan language (.jig), version 2. textX grammar.
+ *
+ * A plan file holds imports, constants, procedures, at most one system
+ * declaration, and setup/test/teardown blocks. Statements are separated by
+ * whitespace (newlines are not significant); blocks use braces; '#' starts a
+ * comment. Statement keywords, operators and literals are reserved words;
+ * every keyword matches whole words only (autokwd).
+ *
+ *   import "../lib/common.jig"
+ *   system {
+ *       board dut: "example-board" (boot: "jtag")
+ *       node gs: csp(address: 10, link: dut.kiss)
+ *   }
+ *   test "ping over KISS" {
+ *       check gs.ping(dut) < 100 ms
+ *   }
+ */
+
+Plan:
+    items*=PlanItem
+;
+
+PlanItem:
+    Import | System | Const | Procedure | Setup | Teardown | Test
+;
+
+Import:
+    'import' path=Str ('as' alias=ID)?
+;
+
+System:
+    'system' (title=Str)? '{' declarations*=Declaration '}'
+;
+
+Declaration:
+    BoardDeclaration | BusDeclaration | NodeDeclaration
+;
+
+BoardDeclaration:
+    'board' name=ID ':' definition=Str ('(' args*=Argument[','] ')')?
+;
+
+BusDeclaration:
+    'bus' name=ID ':' value=Expr
+;
+
+NodeDeclaration:
+    'node' name=ID ':' value=Expr
+;
+
+Const:
+    'const' name=ID '=' value=Expr
+;
+
+Procedure:
+    'procedure' name=ID '(' params*=Param[','] ')' body=Block
+;
+
+Param:
+    name=ID ('=' default=Expr)?
+;
+
+Setup:
+    'setup' body=Block
+;
+
+Teardown:
+    'teardown' body=Block
+;
+
+Test:
+    'test' name=Str ('[' tags+=ID[','] ']')? body=Block
+;
+
+Block:
+    '{' statements*=Statement '}'
+;
+
+Statement:
+    Let | If | Repeat | Every | While | For | Parallel | Timeline | Try | Check | Wait
+    | Log | Record | Fail | Return | Break | Continue | Assign | ExprStatement
+;
+
+Let:
+    'let' name=ID '=' value=Expr
+;
+
+Assign:
+    target=Postfix op=AssignOp value=Expr
+;
+
+AssignOp:
+    '+=' | '-=' | /=(?!=)/
+;
+
+ExprStatement:
+    expr=Expr
+;
+
+If:
+    'if' condition=Expr then=Block elifs*=Elif ('else' otherwise=Block)?
+;
+
+Elif:
+    'elif' condition=Expr body=Block
+;
+
+Repeat:
+    'repeat' count=Expr 'times' ('as' var=ID)? body=Block
+;
+
+Every:
+    'every' period=Expr
+        ( 'for' duration=Expr | 'until' until=Expr | 'times' count=Expr )
+        ('as' var=ID)? body=Block
+;
+
+While:
+    'while' condition=Expr body=Block
+;
+
+For:
+    'for' var=ID 'in' iterable=Expr body=Block
+;
+
+Parallel:
+    kind=ParallelKind '{' tasks+=Task '}'
+;
+
+ParallelKind:
+    'parallel' | 'race'
+;
+
+Task:
+    'task' name=ID body=Block
+;
+
+/* Entries start at their offset from the start of the timeline and run side
+   by side; the timeline ends when the last one finishes. As in 'parallel', a
+   failing entry cancels the others. */
+Timeline:
+    'timeline' '{' entries+=TimelineEntry '}'
+;
+
+TimelineEntry:
+    'at' offset=Expr ('as' name=ID)? body=Block
+;
+
+/* A failure inside 'try' (a false check, a step the system did not satisfy)
+   runs the catch block with its description instead of failing the test. */
+Try:
+    'try' body=Block 'catch' (var=ID)? handler=Block
+;
+
+Check:
+    'check' condition=Expr (',' message=Expr)?
+;
+
+Wait:
+    'wait' ( 'until' condition=Expr ('within' timeout=Expr)? | duration=Expr )
+;
+
+Log:
+    'log' message=Expr
+;
+
+Record:
+    'record' name=ID '=' value=Expr
+;
+
+Fail:
+    'fail' message=Expr
+;
+
+Return:
+    'return' value=Expr
+;
+
+Break:
+    keyword='break'
+;
+
+Continue:
+    keyword='continue'
+;
+
+/* ------------------------------------------------------------ expressions */
+
+Expr:
+    Or
+;
+
+Or:
+    operands=And ('or' operands=And)*
+;
+
+And:
+    operands=Not ('and' operands=Not)*
+;
+
+Not:
+    (negated?='not')? operand=Comparison
+;
+
+Comparison:
+    left=Range (op=CompareOp right=Range)?
+;
+
+CompareOp:
+    '==' | '!=' | '<=' | '>=' | '<' | '>' | /not\s+in\b/ | 'in' | 'contains' | 'matches'
+;
+
+Range:
+    low=Sum ('..' high=Sum)?
+;
+
+Sum:
+    operands=Product (ops=SumOp operands=Product)*
+;
+
+SumOp:
+    '+' | /-(?!=)/
+;
+
+Product:
+    operands=Unary (ops=ProductOp operands=Unary)*
+;
+
+ProductOp:
+    '*' | /\/(?!=)/ | '%'
+;
+
+Unary:
+    (sign=UnaryOp)? operand=Postfix
+;
+
+UnaryOp:
+    '-' | '+'
+;
+
+Postfix:
+    base=Primary ops*=PostOp
+;
+
+PostOp:
+    Attribute | Call | Index
+;
+
+Attribute:
+    '.' name=ID
+;
+
+Call:
+    '(' args*=Argument[','] ')'
+;
+
+Argument:
+    (name=ID ':')? value=Expr
+;
+
+Index:
+    '[' index=Expr ']'
+;
+
+Primary:
+    Quantity | Bool | Null | Bytes | Str | Regex | List | Map | Paren | Name
+;
+
+/* A number and its unit are one token, so a unit never reaches across a line.
+   The parser replaces @UNITS@ with the units of jig.lang.values.UNITS. */
+Quantity:
+    value=/(0x[0-9A-Fa-f_]+|0b[01_]+|\d[\d_]*(\.\d+)?([eE][+-]?\d+)?)([ 	]*(@UNITS@)(?![A-Za-z0-9_]))?/
+;
+
+Bool:
+    value=/(true|false)\b/
+;
+
+Null:
+    value=/none\b/
+;
+
+Bytes:
+    value=/x"[0-9A-Fa-f\s_]*"/
+;
+
+Str:
+    value=/"(\\.|[^"\\\n])*"/
+;
+
+Regex:
+    value=/\/(\\.|[^\/\\\n])+\/[imsx]*/
+;
+
+List:
+    '[' items*=Expr[','] ','? ']'
+;
+
+Map:
+    '{' entries*=MapEntry[','] ','? '}'
+;
+
+MapEntry:
+    (key=ID | quoted=Str) ':' value=Expr
+;
+
+Paren:
+    '(' expr=Expr ')'
+;
+
+Name:
+    !Keyword name=ID
+;
+
+Keyword:
+    /(let|if|elif|else|repeat|times|every|for|in|while|parallel|race|task|timeline|at|try|catch|check|wait|until|within|log|record|fail|return|break|continue|and|or|not|true|false|none|as)(?![A-Za-z0-9_])/
+;
+
+Comment:
+    /#.*/
+;

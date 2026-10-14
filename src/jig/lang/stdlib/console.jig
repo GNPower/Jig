@@ -1,0 +1,35 @@
+# Waiting for firmware on a board's console, restarting it, reading counters.
+#
+#   import "std:console.jig"
+
+# Wait up to `timeout` until the board's console prints `pattern` (a /regex/
+# or text), then until it has been quiet for `settle`, so the next command
+# starts on a quiet line. Returns the match.
+procedure wait_ready(board, pattern, timeout = 30 s, settle = 500 ms) {
+    let found = board.console.expect(pattern, within: timeout)
+    board.console.drain(settle)
+    return found
+}
+
+# Restart the firmware with a console command (its reset or reboot command)
+# and wait until it prints `ready` again. Returns the match.
+procedure restart_via(board, command, ready, timeout = 40 s) {
+    board.console.clear()
+    board.send(command)
+    return wait_ready(board, ready, timeout)
+}
+
+# A counter the board prints as a "<name> <count>" line in reply to `command`.
+# The check fails when no line carries it.
+procedure counter(board, name, command = "stats") {
+    for line in board.cli(command).splitlines() {
+        let text = line.strip()
+        if text.startswith(name + " ") {
+            let rest = text.replace(name, "", 1)
+            if rest matches /^\s+\d+$/ {
+                return number(rest)
+            }
+        }
+    }
+    fail "{command} printed no {name} counter"
+}

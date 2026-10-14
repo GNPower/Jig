@@ -1,0 +1,24 @@
+# Reading what boards print: numbers in command output, hex dumps.
+#
+#   import "std:text.jig"
+
+# The first group of `pattern` (a /regex/) in `output`, as a number. The check
+# fails when the output has no match.
+procedure number_in(output, pattern) {
+    let found = match(pattern, output)
+    check found != none, "no {pattern} in the output"
+    return found.number(1)
+}
+
+# The bytes of a hex dump: every line that holds only two-digit hex bytes
+# separated by blanks ("00 1f a0"), in order. Other lines (the echoed command,
+# a prompt, log lines) are skipped.
+procedure hex_dump_bytes(text) {
+    let data = x""
+    for line in text.splitlines() {
+        if line matches /^\s*[0-9A-Fa-f]{2}(\s+[0-9A-Fa-f]{2})*\s*$/ {
+            data += from_hex(line)
+        }
+    }
+    return data
+}
