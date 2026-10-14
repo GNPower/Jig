@@ -1,0 +1,10 @@
+// Renode's stock STM32F4 platform. Its sysbus init applies an SVD file
+// fetched from the network at load time; this init block replaces it, so
+// the test needs no network. The GPIOE and USB tags are the stock file's.
+using "platforms/cpus/stm32f4.repl"
+
+sysbus:
+    init:
+        Tag <0x40021000, 0x40021003> "GPIOE_MODER" 0xFFFFFFFF
+        Tag <0x40021004, 0x40021007> "GPIOE_OTYPER" 0x00000008
+        Tag <0x50000010, 0x5000003f> "USB:RESET" 0x80000000

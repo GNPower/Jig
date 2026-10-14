@@ -1,0 +1,2 @@
+// The example-stm32 fixture's platform. The unit tests only check that the
+// file exists; a board meant for Renode would include an STM32 platform here.

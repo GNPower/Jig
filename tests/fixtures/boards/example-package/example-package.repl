@@ -1,0 +1,2 @@
+// The example-package fixture's platform description. The unit tests only
+// check that it exists; a board meant for Renode would describe its STM32 here.

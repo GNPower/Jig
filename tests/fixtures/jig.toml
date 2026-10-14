@@ -1,0 +1,9 @@
+# The fixture project Jig's own tests run in (tests/conftest.py points
+# JIG_PROJECT here). Fixture boards only.
+
+[project]
+name = "fixtures"
+
+[paths]
+boards = ["boards"]
+lib = ["lib"]

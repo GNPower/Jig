@@ -1,0 +1,15 @@
+# The plan `nox -s dist` and the release checks run against an installed
+# wheel. Its board starts without power, so its firmware never runs; Jig
+# still checks that the file exists, so the runs put a stub at
+# build/node.elf. Renode builds the machine, compiles the board's C# models
+# and runs 10 ms.
+
+system "installed wheel smoke test" {
+    board node: "example-node"
+}
+
+test "the board starts without power" {
+    check not node.powered
+    wait 10 ms
+    check not node.powered
+}

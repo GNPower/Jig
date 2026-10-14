@@ -1,0 +1,7 @@
+# The example-node fixture's plan library: `import "example-node:node.jig"`.
+
+const NODE_PORT = 10
+
+procedure greeting(name) {
+    return "hello " + name
+}

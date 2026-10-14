@@ -1,0 +1,73 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    SDK build of the Jig C# models (src/jig/models) against a Renode install,
+    for development and CI linting:
+
+      dotnet build tools/models/Jig.Models.csproj -p:RenodePath=<directory holding Renode.dll>
+
+    Sessions do not use this build: Renode compiles the same sources itself at
+    start-up (jig.renode.process). This project is the strict check, with
+    warnings as errors. Without -p:RenodePath, a JIG_RENODE that names
+    Renode's directory is used.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>Jig.Models</AssemblyName>
+    <RootNamespace>Antmicro.Renode.Peripherals.Jig</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <WarningLevel>4</WarningLevel>
+    <!-- CA1416: the Windows build of Renode stamps its assemblies Windows-only
+         (it targets net8.0-windows). These models call only portable Renode
+         APIs and also build against the Linux Renode, which carries no stamp. -->
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
+    <!-- MSB3277: the net8.0 reference pack carries System.Collections.Immutable
+         8.0 while Renode's Infrastructure.dll was built against 9.0. At run time
+         Renode loads its own 9.0 copy; these models make no Immutable calls. -->
+    <MSBuildWarningsAsMessages>$(MSBuildWarningsAsMessages);MSB3277</MSBuildWarningsAsMessages>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <RenodePath Condition="'$(RenodePath)' == '' And Exists('$(JIG_RENODE)/Renode.dll')">$(JIG_RENODE)</RenodePath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../../src/jig/models/**/*.cs" />
+  </ItemGroup>
+
+  <Target Name="JigCheckRenodePath" BeforeTargets="ResolveAssemblyReferences"
+          Condition="'$(RenodePath)' == '' Or !Exists('$(RenodePath)/Renode.dll')">
+    <Error Text="RenodePath must name the directory holding Renode.dll (dotnet build -p:RenodePath=...); got '$(RenodePath)'" />
+  </Target>
+
+  <ItemGroup>
+    <Reference Include="Infrastructure">
+      <HintPath>$(RenodePath)/Infrastructure.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Renode">
+      <HintPath>$(RenodePath)/Renode.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Migrant">
+      <HintPath>$(RenodePath)/Migrant.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="ELFSharp">
+      <HintPath>$(RenodePath)/ELFSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- The monitor's interaction types, which the bridge (Harness/Bridge.cs) uses. -->
+    <Reference Include="AntShell">
+      <HintPath>$(RenodePath)/AntShell.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- Renode's Infrastructure.dll is built against this 9.0 assembly, which
+         Renode ships beside itself; referencing it unifies the version. -->
+    <Reference Include="System.Collections.Immutable">
+      <HintPath>$(RenodePath)/System.Collections.Immutable.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+</Project>

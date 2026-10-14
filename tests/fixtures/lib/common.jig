@@ -1,0 +1,7 @@
+# A plan library in the fixture project's [paths] lib: `import "common.jig"`.
+
+const LIBRARY = "common"
+
+procedure twice(value) {
+    return value * 2
+}

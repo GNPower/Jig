@@ -1,0 +1,12 @@
+<Project>
+  <!--
+    One build tree per host OS: a checkout shared between Windows and a Linux
+    container must not reuse the other host's intermediate files.
+  -->
+  <PropertyGroup>
+    <JigHost Condition="'$(OS)' == 'Windows_NT'">windows</JigHost>
+    <JigHost Condition="'$(OS)' != 'Windows_NT'">linux</JigHost>
+    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)obj/$(JigHost)/</BaseIntermediateOutputPath>
+    <BaseOutputPath>$(MSBuildThisFileDirectory)bin/$(JigHost)/</BaseOutputPath>
+  </PropertyGroup>
+</Project>
