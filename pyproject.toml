@@ -56,9 +56,9 @@ docs = [
     "myst-parser>=4.0,<6",
 ]
 lint = [
-    "ruff==0.17.0",
-    "pymarkdownlnt==0.9.40",
-    "zizmor==1.30.1",
+    "ruff==0.17.1",
+    "pymarkdownlnt==0.9.41",
+    "zizmor==1.31.1",
 ]
 typecheck = [
     "jig-dsl[test]",
@@ -69,7 +69,7 @@ typecheck = [
 release = [
     "build==1.6.1",
     "twine==7.0.0",
-    "bump-my-version==1.5.1",
+    "bump-my-version==1.6.0",
 ]
 audit = [
     "pip-audit==2.10.1",
