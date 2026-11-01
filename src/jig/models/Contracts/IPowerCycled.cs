@@ -1,7 +1,7 @@
 //
-// Contract for a device that loses power with the board (board.yaml
-// power.restart). jig.contracts.verify checks that every peripheral listed
-// there implements it.
+// Contract for a device that loses power with the board. Every peripheral
+// that implements it and is not on the board's backup_supply restarts when
+// the board's power cycles; the harness asks the machine which ones do.
 //
 namespace Antmicro.Renode.Peripherals.Jig.Contracts
 {

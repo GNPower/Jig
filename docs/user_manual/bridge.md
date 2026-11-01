@@ -75,11 +75,11 @@ chose to run:
 
 - plans, which can send any Renode monitor command through
   `board.monitor(...)`;
-- board definitions and their plugins, which are Python that Jig imports;
+- board files and their plugins, which are Python that Jig imports;
 - C# models, which Renode compiles and runs inside its process;
 - firmware, which runs inside the emulator, with no more access to the
   host than Renode's models give it;
-- build commands that board definitions name, which Jig runs on the host.
+- build commands that board files name, which Jig runs on the host.
 
 Run plans and board repositories you would run as programs. Renode
 itself comes from its GitHub releases, checked against a size and SHA-256

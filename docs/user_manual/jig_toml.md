@@ -26,8 +26,8 @@ path = "../tools/renode"      # a Renode executable or its directory
 version = ">=1.17.0,<1.18"    # the Renode versions the project accepts
 
 [defaults]
-board = "zed-a"               # the board of a plan that declares no system
-options = { pl = "model" }    # board options, for every board that has them
+board = "zedboard"            # the board of a plan that declares no system
+options = { node = 2 }        # board options, for every board that has them
 ```
 
 Every table and key is optional, and an unknown one is an error. Paths are
@@ -60,9 +60,9 @@ relative to the file that names them.
   - The board a plan without a system runs on, unless `--board` names
     one.
 * - `defaults.options`
-  - Board options applied to every board in a plan that has them, under
-    what the plan and `--option` choose. `jig boot` and
-    `jig check --contracts` don't apply them.
+  - Board options applied to every board that has them, under what a
+    plan's board line and `--option` choose. `jig boot`, `jig check`,
+    `jig platform` and `jig boards` apply them too.
 ```
 
 ## Local overrides

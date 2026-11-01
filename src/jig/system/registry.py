@@ -3,9 +3,9 @@
 ``jig.plugin`` is the public face of this module: a board plugin's
 ``register(api)`` and an extension's call the ``PluginApi`` methods, which
 stage registrations here and commit them when ``register`` returns. The board
-loader, the simulation and the interpreter then ask this module for board.yaml
-sections, plan functions, handle members, housekeeping codecs, node kinds, bus
-observers, SoC drivers and SoC hooks.
+loader, the simulation and the interpreter then ask this module for board
+settings, plan functions, handle members, housekeeping codecs, node kinds, bus
+observers, protocol layers, device families and family hooks.
 
 Board plugins are loaded once per board definition and process. Each plugin
 source (a ``.py`` file, or a package directory holding ``__init__.py``) gets
@@ -17,6 +17,7 @@ two boards' plugins never shadow each other.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import importlib
 import importlib.machinery
@@ -50,7 +51,7 @@ class Owner:
 
     kind: str  # "extension" or "board"
     name: str  # extension module, or board name
-    source: Path | None = None  # the board.yaml, for a board
+    source: Path | None = None  # the board file, for a board
 
     def __str__(self) -> str:
         if self.kind == "extension":
@@ -84,7 +85,8 @@ class Staged:
     codecs: dict[str, Any] = field(default_factory=dict)
     node_kinds: dict[str, Any] = field(default_factory=dict)
     bus_observers: dict[str, Any] = field(default_factory=dict)
-    soc_drivers: dict[str, Any] = field(default_factory=dict)
+    protocols: dict[str, Any] = field(default_factory=dict)
+    device_families: dict[str, Any] = field(default_factory=dict)
     hooks: dict[str, Any] = field(default_factory=dict)
 
 
@@ -95,6 +97,8 @@ def same(first: Any, second: Any) -> bool:
         return True
     if isinstance(first, Member) and isinstance(second, Member):
         return first.attribute == second.attribute and same(first.function, second.function)
+    if dataclasses.is_dataclass(first) and type(first) is type(second):
+        return bool(first == second)
     return bool(
         getattr(first, "__qualname__", None) is not None
         and getattr(first, "__qualname__", None) == getattr(second, "__qualname__", None)
@@ -112,9 +116,10 @@ class Registry:
         self.codecs: dict[str, list[Entry]] = {}
         self.node_kinds: dict[str, list[Entry]] = {}
         self.bus_observers: dict[str, list[Entry]] = {}
-        self.soc_drivers: dict[str, list[Entry]] = {}
+        self.protocols: dict[str, list[Entry]] = {}
+        self.device_families: dict[str, list[Entry]] = {}
         self.hooks: dict[tuple[Path, str], Entry] = {}
-        self.boards: dict[Path, Owner] = {}  # board.yaml -> owner, once its plugin ran
+        self.boards: dict[Path, Owner] = {}  # board file -> owner, once its plugin ran
         self._modules: dict[Path, ModuleType] = {}
         self._extensions = False
         self._loading_extensions = False
@@ -134,11 +139,12 @@ class Registry:
         for name, value in staged.sections.items():
             earlier = self.sections.get(name)
             if earlier is not None and not same(earlier.value, value):
-                raise clash("board.yaml section", name, earlier)
+                raise clash("board setting", name, earlier)
         for registry_map, staged_map, kind in (
             (self.codecs, staged.codecs, "housekeeping codec"),
             (self.node_kinds, staged.node_kinds, "node kind"),
             (self.bus_observers, staged.bus_observers, "bus observer"),
+            (self.protocols, staged.protocols, "protocol layer"),
         ):
             for name, value in staged_map.items():
                 for earlier in registry_map.get(name, []):
@@ -170,9 +176,10 @@ class Registry:
             (self.codecs, staged.codecs),
             (self.node_kinds, staged.node_kinds),
             (self.bus_observers, staged.bus_observers),
+            (self.protocols, staged.protocols),
             (self.members, staged.members),
             (self.functions, staged.functions),
-            (self.soc_drivers, staged.soc_drivers),
+            (self.device_families, staged.device_families),
         ):
             for key, value in staged_table.items():
                 add(table, key, value)
@@ -202,8 +209,8 @@ class Registry:
     # ---------------------------------------------------------- board plugins
 
     def load_board(self, board: Board) -> Owner:
-        """Run the board's plugin (board.yaml ``plugin:``) unless it ran for this
-        definition already; returns the board's owner record."""
+        """Run the board's plugin (the board file's ``plugin`` setting) unless
+        it ran for this board file already; returns the board's owner record."""
         self.ensure_extensions()
         known = self.boards.get(board.source)
         if known is not None:
@@ -305,8 +312,16 @@ class Registry:
     def bus_observers_for(self, sources: Iterable[Path | None]) -> dict[str, Entry]:
         return self._for(self.bus_observers, sources)
 
-    def soc_driver_for(self, board: Board) -> Entry | None:
-        for entry in self.soc_drivers.get(board.soc, []):
+    def protocols_for(self, sources: Iterable[Path | None] | None) -> dict[str, Entry]:
+        """Protocol layers by name: the extensions' and those of the given
+        boards' plugins, or of every plugin loaded so far (``None``)."""
+        if sources is None:
+            return {name: entries[0] for name, entries in self.protocols.items() if entries}
+        return self._for(self.protocols, sources)
+
+    def family_for(self, board: Board) -> Entry | None:
+        """The device family the board's plugin registered for its device."""
+        for entry in self.device_families.get(board.soc, []):
             if entry.owner.source == board.source:
                 return entry
         return None

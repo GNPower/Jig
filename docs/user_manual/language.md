@@ -10,10 +10,11 @@ boards.
 import "../lib/zed.jig"
 
 system "two ZedBoards on CAN" {
-    board a: "zed-a"
-    board b: "zed-b"
-    bus can0: can(bitrate: 1 Mbit/s, members: [a.can, b.can])
-    node host: csp(address: 10, link: a.kiss)
+    board a: "zedboard" (node: 1)
+    board b: "zedboard" (node: 2)
+    link can0: can(members: [a.can, b.can])
+    node host: csp(address: 10) over kiss
+    link ground: uart(members: [a.kiss, host])
 }
 
 setup {
@@ -23,7 +24,7 @@ setup {
     }
 }
 
-test "the host computer reads zed-b's status" [smoke] {
+test "the host computer reads node 2's status" [smoke] {
     let status = host.hk(b)
     check status.node == 2
 }
@@ -31,7 +32,8 @@ test "the host computer reads zed-b's status" [smoke] {
 
 The plan runs as it stands from `examples/zedboard/plans`: `booted`, from
 the example's `lib/zed.jig`, waits for a board's boot banner and its first
-prompt.
+prompt. Board files are written in the same language
+({doc}`board_files`).
 
 ## File structure
 
@@ -74,9 +76,9 @@ to the end of the line.
 These words are reserved and cannot name a variable: `let if elif else
 repeat times every for in while parallel race task timeline at try catch
 check wait until within log record fail return break continue and or not
-true false none as`. Words such as `board`, `test` and `system` open a
-declaration only at the place a declaration goes, so they remain usable as
-variable and parameter names.
+true false none as over`. Words such as `board`, `link`, `node`, `test` and
+`system` open a declaration only at the place a declaration goes, so they
+remain usable as variable and parameter names.
 
 ## Imports and the library path
 
@@ -90,9 +92,9 @@ import "std:text.jig"
 - Any other plain path is looked up beside the importing file, then in
   each directory of `[paths] lib` in the project's `jig.toml`: the
   ZedBoard example's plans find `zed.jig` in its `lib` directory that way.
-- `"NAME:file.jig"` names a file in the `lib` directory of the board
-  definition `NAME`, so a board repository can ship the procedures its
-  plans share.
+- `"NAME:file.jig"` names a file in the `lib` directory beside the board
+  file of the board `NAME`, so a board repository can ship the procedures
+  its plans share.
 - `"std:file.jig"` names a file of Jig's own plan library.
 
 A library reference cannot reach outside its directory with `../`.
@@ -101,40 +103,62 @@ A library reference cannot reach outside its directory with `../`.
 
 ```jig
 system "title" {
-    board NAME: "definition" (boot: "jtag", mips: 100)
-    bus NAME: can(bitrate: 1 Mbit/s, members: [NAME.can, NAME.can])
-    node NAME: csp(address: 10, link: NAME.kiss)
-    node NAME: csp(address: 11, bus: NAME)
+    board NAME: "board" (boot: "jtag", mips: 100, OPTION: VALUE)
+    node NAME: csp(address: 10) over kiss
+    node NAME: csp(address: 11) over cfp
+    link NAME: uart(members: [BOARD.LINK, NODE])
+    link NAME: can(members: [BOARD.LINK, BOARD.LINK, NODE])
 }
 ```
 
 `board`
-: An instance of a board definition, found on the board search path
-  ({doc}`board_yaml`). Settings in parentheses: `boot`, a boot mode of the
-  board's SoC driver (`jtag` or `qspi` for a Zynq-7000, `flash` for an
+: An instance of a board, found by name on the board search path
+  ({doc}`board_files`). Settings in parentheses: `boot`, one of the
+  device's boot modes (`jtag` or `qspi` for a Zynq-7000, `flash` for an
   STM32); `mips`, the virtual CPU speed in millions of instructions per
-  second; `storage`, initial images for the board's storage devices, as a
-  map from device to file relative to the plan; `power`, `"on"` or
-  `"off"`, over board.yaml's `power.initial`; and the board's options by
-  name. `jig run --boot`, `--mips` and `--option NAME=VALUE` override them
-  for every board.
-
-`bus`
-: A CAN bus joining the CAN interfaces of boards. The harness carries the
-  frames, acknowledges them and watches the bus.
+  second; `storage`, initial images for the board's storage peripherals,
+  as a map from peripheral to file relative to the plan; `power`, `"on"`
+  or `"off"`, over the board file's `power` setting; and the board's
+  options by name. `jig run --boot`, `--mips` and `--option NAME=VALUE`
+  override them for every board.
 
 `node`
-: A protocol endpoint the harness runs. The bundled CSP extension provides
-  `csp(address: N, link: board.interface)` on a board's KISS UART and
-  `csp(address: N, bus: name)` on a CAN bus. Optional RDP settings:
+: A protocol endpoint the harness runs, with the layers below it after
+  `over`: `csp(address: 10) over kiss` sends CSP packets in KISS frames, for
+  a UART, and `csp(address: 11) over cfp` in CFP fragments, for a CAN bus.
+  The bundled CSP extension provides `csp(...)`. Optional RDP settings:
   `window`, `conn_timeout`, `packet_timeout`, `ack_timeout`,
   `delayed_acks` and `ack_delay_count`; `broadcast: true` lets the node
   take packets sent to the broadcast address 31. A CSP node answers pings
-  like a libcsp node. Board plugins can add other node kinds.
+  like a libcsp node. Board plugins can add other node kinds. A node joins
+  one link, and a node no link joins is an error.
 
-Declarations are evaluated in order, so a declaration can name the boards
-and buses above it. Boards of different definitions can share a system and
-a bus.
+`link`
+: Joins boards' external links and nodes. A `uart` link joins one board's
+  external UART link and the nodes on it. A `can` link joins the external
+  CAN links of any number of boards and the nodes on that bus; the harness
+  carries the frames, acknowledges them and watches the bus. A `can` link
+  with one board's link and no node attaches the harness to that board's
+  bus, so a plan can send and watch frames on one board.
+
+Rules for links:
+
+- Rates come from the boards' links. A system link that states `baud` or
+  `bitrate` must agree with them; a CAN bus whose boards state none runs
+  at 1 Mbit/s.
+- A board's link joins one system link at most.
+- A node's stack must fit the link: `csp(address: 10) over kiss` on a CAN
+  link is an error that names the layer that does not fit.
+- An external UART link of a board needs no system link: the harness reads
+  and writes it in every run, and its output is recorded from the start.
+  An external CAN link that no system link names stays unconnected.
+- This release refuses a system link on a link inside a board (a probe)
+  and a UART link between two boards; a later release adds both, with
+  boards of several devices.
+
+Declarations come in any order: Jig declares the boards first, then the
+nodes, then the links, so a link can name a node declared below it.
+Different boards can share a system and a link.
 
 A plan without a system runs on one board named `dut`: the board given by
 `jig run --board NAME`, else the one in `[defaults] board` of `jig.toml`.
@@ -237,10 +261,11 @@ Members, calls and indexing
 : `a.console.expect(/ready/, within: 30 s)`, with named arguments after
   positional ones; `list[0]`, `map["key"]`, `match[1]`, `data[5]`.
 
-Operators, loosest first: `or`; `and`; `not`; the comparisons `==`, `!=`,
-`<`, `<=`, `>`, `>=`, `in`, `not in`, `contains` and `matches`; `..`; `+`
-and `-`; `*`, `/` and `%`; unary `-` and `+`. `and` and `or` stop at the
-first operand that decides the result, and return that operand.
+Operators, loosest first: `over`, which stacks protocol layers (`csp over
+kiss`); `or`; `and`; `not`; the comparisons `==`, `!=`, `<`, `<=`, `>`,
+`>=`, `in`, `not in`, `contains` and `matches`; `..`; `+` and `-`; `*`, `/`
+and `%`; unary `-` and `+`. `and` and `or` stop at the first operand that
+decides the result, and return that operand.
 
 - `a contains b`: text contains text or a regular expression match, a list
   contains an item, a map has a key.
@@ -258,7 +283,7 @@ endswith find count`; lists have `append index count`.
 A procedure runs in a scope of its own, with its parameters as variables.
 It sees the names of the file it is defined in: that file's constants and
 procedures and, for a procedure in the plan itself, the system's boards,
-buses and nodes. Procedures in imported files take boards as arguments. A
+links and nodes. Procedures in imported files take boards as arguments. A
 block (`if`, a loop body, a task) opens a scope inside the one around it:
 `let` declares a variable there, and assignment finds the nearest
 enclosing variable of that name. Procedures can wait, call other

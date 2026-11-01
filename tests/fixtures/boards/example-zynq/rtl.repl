@@ -1,6 +1,0 @@
-// The example-zynq register block as co-simulated RTL (the "rtl" choice of
-// option pl). The RTL is built for this clock.
-
-block: CoSimulated.CoSimulatedPeripheral @ sysbus <0x43C00000, +0x1000>
-    frequency: 20000000
-    limitBuffer: 1000

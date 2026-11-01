@@ -1,7 +1,8 @@
 # Functions and handles
 
 A plan reaches the emulation only through the functions on this page and
-the handles its system declaration creates: one per board, bus and node.
+the handles its system declaration creates: one per board, link and node,
+and through a board, one per device, peripheral and link of the board.
 Each handle has a fixed set of members, listed here; board plugins can add
 members to the handles of their own boards. Members that wait are steps in
 the report, and every duration they take is in seconds of simulated time.
@@ -106,43 +107,46 @@ accepted at the end.
 * - Member
   - Meaning
 * - `name`, `board`, `boot_mode`, `address`
-  - Instance name, definition, boot mode, CSP address.
-* - `console`
-  - The console on the board's `console` interface.
+  - Instance name, board name, boot mode, and the address of the board's
+    `protocol csp(...)`.
+* - A device, peripheral or link name
+  - That part of the board: `a.zynq`, `a.flash0`, `a.console`, `a.can`
+    (below).
 * - `cli(command, settle: 0.3 s)`, `send(line)`,
     `expect(pattern, within: 10 s)`
-  - Shortcuts for the console's members of the same names.
-* - `kiss`, `can` or `interface(name)`
-  - An interface, by its name in board.yaml, for `link:` and `members:`.
+  - The console members of the same names, on the board's one external
+    UART link whose interface's stack has `cli`.
 * - `set_sensor(name, volts)`
-  - Set an analog input (board.yaml `sensors`); returns the code the
-    converter will report.
+  - Set an analog input (a board file's `sensor` line); returns the code
+    the converter will report, or `none` for a converter that reports no
+    codes to the harness.
 * - `sensor_code(name)`, `sensor_code(name, volts: v)`, `sensors`
   - The code an input reads now, or would read at `v`; the input names.
 * - `drive(sensor, profile, every: 1 s)`
   - Set an input from a profile every `every` seconds in the background;
     returns a handle with `name`, `running`, `updates` and `stop()`.
 * - `set_time(iso)`, `time()`
-  - Set and read the board's real-time clock model (board.yaml `rtc`), as
+  - Set and read the real-time clock the board file's `rtc` names, as
     calendar time.
 * - `reset()`
   - Pulse the system-reset input.
 * - `power_off()`, `power_on()`, `power_cycle(off: 1 s)`
   - Remove power, restore it, or both with `off` seconds between. Without
     power the board's cores are halted while simulated time runs on, and
-    the chips on its rails (board.yaml `power.restart`) restart. Restoring
-    power runs the SoC's power-on sequence from reset: a board that boots
-    from its own flash starts its firmware again, and a Zynq-7000 booted
-    over JTAG comes back waiting in its BootROM for its debugger until
-    `boot()` runs its boot flow again. A board that started without power
-    runs its whole boot flow at its first `power_on()`.
+    every peripheral whose model implements Jig's power-cycle contract
+    restarts, except those on the board's `backup_supply`. Restoring
+    power runs the device's power-on sequence from reset: a board that
+    boots from its own flash starts its firmware again, and a Zynq-7000
+    booted over JTAG comes back waiting in its BootROM for its debugger
+    until `boot()` runs its boot flow again. A board that started without
+    power runs its whole boot flow at its first `power_on()`.
 * - `boot()`
   - Run the board's boot flow again, as at the start of the run, for any
     boot mode and without a reset first: for a JTAG boot, the debugger's
     load. An error while the board has no power.
 * - `powered`
   - Whether the board has power: false after `power_off()`, and from the
-    start for a board whose `power.initial` is `off`.
+    start for a board whose `power` setting is `"off"`.
 * - `image(role)`
   - A firmware image by role, as an update would send it, from the board's
     image builder.
@@ -151,7 +155,32 @@ accepted at the end.
 ```
 
 A board's plugin can add members to its own boards, and only to those
-({doc}`../how_to/write_a_plugin`).
+({doc}`../how_to/write_a_plugin`). A board whose device, peripheral or
+link has the name of a board member, or of a member its plugin adds, fails
+to load with both named.
+
+### Devices, peripherals and links of a board
+
+```{list-table}
+:header-rows: 1
+:widths: 40 60
+
+* - Handle
+  - Members
+* - A device, `a.zynq`
+  - `name`, `family` (`zynq7000`, `stm32`), `monitor(command)`.
+* - A peripheral, `a.flash0`
+  - `name`, `model`.
+* - An external UART link, `a.console`, `a.kiss`
+  - The console members (below). The harness is on every external UART
+    link from the start of the run.
+* - An external CAN link that a system link joins, `a.can`
+  - That system link's handle (see CAN links).
+* - Any other link
+  - `name`, `kind`, `machine`, `external`. Its traffic is out of a plan's
+    reach: an external CAN link joins the harness through a system link,
+    and a link inside the board needs a probe, which a later release adds.
+```
 
 ## Consoles
 
@@ -163,10 +192,11 @@ A board's plugin can add members to its own boards, and only to those
   - Meaning
 * - `cli(command, settle: 0.3 s)`
   - Clear the buffer, send the command, return everything printed until
-    the line was quiet for `settle`.
+    the line was quiet for `settle`, or, when the interface's `cli` layer
+    names a `prompt`, through the prompt (within 10 s).
 * - `send(line)`, `write(text)`
-  - Send a line with the interface's line ending (`eol` in board.yaml,
-    CR by default), or characters as they are.
+  - Send a line with the line ending of the `cli` layer in the
+    interface's stack (CR by default), or characters as they are.
 * - `expect(pattern, within: 10 s)`
   - Wait for a regular expression or text in the buffer; returns the
     match.
@@ -178,11 +208,122 @@ A board's plugin can add members to its own boards, and only to those
   - What arrived since the last clear; everything the console received
     since the run started, including what the board printed before the
     plan first read the console; the console's name in reports.
+* - `press(key)`, `raw`, `raw_buffer`
+  - With `vt100` in the interface's stack only: send a key by name; the
+    bytes the board sent since the run started, as it sent them; and the
+    bytes it sent since the last clear (below).
 ```
 
 `cli` and `expect` look at the same buffer, which `cli` and `clear`
 empty. A task that waits for lines while another task sends commands
 should expect only lines that come after the last command it knows about.
+
+Without `vt100`, a console reads the bytes as Latin-1 text, escape
+sequences included.
+
+### Consoles that run vt100
+
+`vt100` in an interface's stack (`interface uart0: cli over vt100`)
+renders what the firmware writes as a terminal would show it. Cursor
+moves, line edits, erases and colors take effect, so `expect`, `seen`,
+`cli` and `buffer` work on the text a person at a terminal reads. The
+layer runs on any byte stream.
+
+Line editors change their input line on the screen as keys arrive:
+funbiscuit's embedded-cli echoes a character typed in the middle of a line
+as `ESC [ @` and the character, and rewrites the whole line when the user
+recalls a command. The bytes never hold the line as the screen shows it.
+
+What the terminal renders:
+
+- Text overwrites the screen at the cursor. CR returns to the start of the
+  line, LF starts the next line (a bare LF reads like CR LF), BS moves left
+  without erasing, and a tab moves to the next multiple of 8 columns, so it
+  reads as spaces.
+- The cursor moves (`ESC [ n A`, `B`, `C`, `D` and `G`, `ESC [ r ; c H` and
+  `f`), saves and restores its place (`ESC 7` and `ESC 8`, `ESC [ s` and
+  `ESC [ u`), inserts, deletes and erases characters (`ESC [ n @`, `P` and
+  `X`) and erases in the line and on the screen (`ESC [ n K` and `J`).
+  Colors, window titles and every other sequence are dropped. A sequence
+  split between two reads of the line works.
+- The screen has 24 rows, as a VT100's does. Lines that scroll off its top
+  are history, and the cursor can't move back into them. Clearing the
+  screen (`ESC [ 2 J`) moves what was on it into history, so `text` keeps
+  what the board printed before it cleared the screen.
+- Lines don't wrap, however long the firmware writes them.
+- Spaces at the end of a line aren't text, except on the cursor's line up
+  to the cursor: a prompt `"> "` keeps its space while the cursor waits
+  after it.
+- Each byte from 0x80 up reads as one Latin-1 character, as it does
+  without `vt100`.
+
+`clear()` marks where the cursor is. From then on `buffer` holds the
+cursor's line from that place on, and every line the board writes, erases
+or moves down onto with a line feed, each as it stands now. A line the
+board rewrites from its start, such as a progress bar or a recalled
+command, is in `buffer` whole. Lines the board doesn't touch stay out, so a
+status line redrawn at the top of the screen doesn't bring back the lines
+below it.
+
+With a `prompt` in the `cli` layer, `cli` returns when the prompt stands
+where the next command would be typed: at the end of the cursor's line,
+with the cursor right after it, on a line the board reached after the
+command went out. A line editor that redraws its prompt with a half-typed
+command after it, as embedded-cli does when it prints a message, doesn't
+end the wait.
+
+`press(key)` sends the bytes a terminal sends for the key; an unknown name
+is an error that lists the names:
+
+```{list-table}
+:header-rows: 1
+:widths: 45 55
+
+* - Names
+  - Bytes
+* - `up`, `down`, `right`, `left`
+  - `ESC [ A`, `ESC [ B`, `ESC [ C`, `ESC [ D`
+* - `home`, `end`
+  - `ESC [ H`, `ESC [ F`
+* - `insert`, `delete`, `page_up`, `page_down`
+  - `ESC [ 2 ~`, `ESC [ 3 ~`, `ESC [ 5 ~`, `ESC [ 6 ~`
+* - `tab`, `enter`, `backspace`, `escape`
+  - HT (0x09), CR (0x0D), DEL (0x7F), ESC (0x1B)
+* - `ctrl-a` to `ctrl-z`
+  - 0x01 to 0x1A
+```
+
+Terminals differ on two of these. A VT100's backspace key sends BS (0x08);
+Jig sends DEL, the erase character of a Unix terminal, and embedded-cli
+and linenoise read either as backspace. A VT100 in new line mode sends CR
+LF for its return key; Jig sends CR alone. `write` sends any other bytes.
+
+A plan whose patterns matched the bytes needs these changes when its
+console gains `vt100`:
+
+- A pattern written across an escape sequence, such as
+  `/jig\x1b\[0m> /`, no longer matches. Write the visible text: `"jig> "`.
+- Lines end with `\n` alone: `/ok\r\n/` becomes `/ok\n/`.
+- Spaces at the end of a line are gone: `/(\w\w )+$/` becomes
+  `/(\w\w ?)+$/`.
+- A tab reads as spaces: `/name\tvalue/` becomes `/name\s+value/`.
+
+Read data a board prints, such as a memory dump or a table, from
+`raw_buffer`, the bytes since the last `clear()` or `cli`, or from `raw`.
+A line of the data that another writer's output reaches between the line's
+CR and its LF is gone from the rendered text. Here a board answers `dump`
+with four bytes per line, and another task logs a message after the first
+line's CR:
+
+```text
+dump\r\n00 01 02 03\r[adc] sample ready\r\n\n04 05 06 07\r\n
+```
+
+The CR returns the cursor to the start of `00 01 02 03` and the message
+overwrites it, so `cli("dump")` returns
+`"dump\n[adc] sample ready\n\n04 05 06 07\n"`, while `raw_buffer` holds
+every byte above. A message shorter than the line leaves the line's end
+behind: `[adc] ok` turns it into `[adc] ok 03`.
 
 ### Background work
 
@@ -193,7 +334,11 @@ on a sensor the board cannot set, the block running when Jig collects the
 failure ends with ERROR and the reason, so work started in `setup` that
 fails during a test makes that test ERROR. `handle.stop()` ends it sooner.
 
-## Buses
+## CAN links
+
+A system's `can` link has these members, and a plan reaches the same
+handle through each board's CAN link that the system link joins:
+`can0.frames` and `a.can.frames` are one count.
 
 ```{list-table}
 :header-rows: 1
@@ -202,7 +347,7 @@ fails during a test makes that test ERROR. `handle.stop()` ends it sooner.
 * - Member
   - Meaning
 * - `name`, `bitrate`
-  - The bus's name and bit rate.
+  - The system link's name and the bus's bit rate.
 * - `frames`
   - CAN frames seen on the bus so far.
 * - `acknowledge(enabled)`
@@ -242,8 +387,8 @@ fails during a test makes that test ERROR. `handle.stop()` ends it sooner.
     payload.
 * - `hk(target, port, timeout: 2 s)`
   - Request housekeeping from a board and decode it, with the request and
-    codec in the board's `csp.housekeeping`, sent to its port unless
-    `port` names another.
+    codec of the board's `protocol csp(housekeeping: ...)`, sent to its
+    port unless `port` names another.
 * - `hk_published(target, port)`
   - Housekeeping that boards sent this node unasked, decoded; both
     arguments are optional filters.
@@ -274,11 +419,12 @@ fails during a test makes that test ERROR. `handle.stop()` ends it sooner.
 ```
 
 A node takes packets sent to the broadcast address 31 only when its
-declaration says so, `csp(address: 10, link: a.kiss, broadcast: true)`;
+declaration says so, `csp(address: 10, broadcast: true) over kiss`;
 otherwise `receive` and `received` never see them.
 
-A target is a board or a CSP address. A node answers pings sent to it. RDP
-options start from libcsp 1.6's defaults (a window of 4, a 10 s connection
-timeout, a 1 s packet timeout, and delayed acknowledgments sent after
-250 ms or every 2 packets); the target board's `csp.rdp` overrides them,
-and the node's declaration overrides both.
+A target is a board, one of its devices (`a.zynq`) or a CSP address. A
+node answers pings sent to it. RDP options start from libcsp 1.6's
+defaults (a window of 4, a 10 s connection timeout, a 1 s packet timeout,
+and delayed acknowledgments sent after 250 ms or every 2 packets); the
+`rdp` of the target board's `protocol csp(...)` overrides them, and the
+node's declaration overrides both.

@@ -156,21 +156,70 @@ def load(path: Path) -> Program:
     return Program(_load(path.resolve(), ()))
 
 
-def _load(path: Path, chain: tuple[Path, ...]) -> Module:
-    if path in chain:
-        cycle = " -> ".join(p.name for p in (*chain, path))
-        raise PlanError(f"import cycle: {cycle}")
+def load_board_file(path: Path) -> Program:
+    """Parse a board file: ``const`` lines, then one ``board "<name>" { ... }``.
+    Anything else (a test, a system, an import) is a PlanError naming its
+    line."""
+    module = _parse(path.resolve(), "board file")
+    definitions = module.items("BoardDefinition")
+    for item in module.model.items:
+        kind = type(item).__name__
+        if kind in ("Const", "BoardDefinition"):
+            if kind == "Const" and definitions and item._tx_position > definitions[0]._tx_position:
+                raise PlanError(
+                    "const lines come before the board definition", module.location(item)
+                )
+            continue
+        raise PlanError(
+            f"a board file holds const lines and one board definition, not {_article(kind)}",
+            module.location(item),
+        )
+    if len(definitions) != 1:
+        where = module.location(definitions[1]) if definitions else module.path.name
+        raise PlanError("a board file holds one board definition", where)
+    return Program(module)
+
+
+_KIND_WORDS = {
+    "Import": "an import",
+    "System": "a system",
+    "Procedure": "a procedure",
+    "Setup": "a setup block",
+    "Teardown": "a teardown block",
+    "Test": "a test",
+}
+
+
+def _article(kind: str) -> str:
+    return _KIND_WORDS.get(kind, kind.lower())
+
+
+def _parse(path: Path, what: str) -> Module:
     if not path.is_file():
-        raise PlanError(f"plan file {path} not found")
+        raise PlanError(f"{what} {path} not found")
     text = path.read_text(encoding="utf-8")
     try:
         model = _metamodel().model_from_file(str(path))
     except TextXSyntaxError as exc:
-        raise PlanError(_syntax_message(exc), f"{path.name}:{exc.line}:{exc.col}") from None
+        where = f"{path.name}:{exc.line}:{exc.col}"
+        raise PlanError(_syntax_message(exc, text), where) from None
     except TextXError as exc:
         raise PlanError(str(exc), path.name) from None
     module = Module(path, text, model)
     _compile_templates(module)
+    return module
+
+
+def _load(path: Path, chain: tuple[Path, ...]) -> Module:
+    if path in chain:
+        cycle = " -> ".join(p.name for p in (*chain, path))
+        raise PlanError(f"import cycle: {cycle}")
+    module = _parse(path, "plan file")
+    for item in module.items("BoardDefinition"):
+        raise PlanError(
+            "a plan file holds no board definition: a board is defined in boards/<name>/board.jig",
+            module.location(item),
+        )
     for item in module.items("Import"):
         target = resolve_import(unquote(item.path.value), path, module.location(item))
         child = _load(target, (*chain, path))
@@ -215,7 +264,7 @@ def resolve_import(reference: str, importer: Path, where: str = "") -> Path:
             from jig.system import boards
 
             try:
-                base = boards.find(prefix).directory / "lib"
+                base = boards.locate(prefix).directory / "lib"
             except ConfigError as exc:
                 raise PlanError(f"import {reference!r}: {exc}", where) from None
         searched = [_inside(base, rest, reference, where)]
@@ -233,7 +282,17 @@ def resolve_import(reference: str, importer: Path, where: str = "") -> Path:
     return target
 
 
-def _syntax_message(exc: TextXSyntaxError) -> str:
+_RENAMED = (
+    (re.compile(r"\s*bus\s+\w+\s*:"), "a system declares a CAN bus as link NAME: can(...)"),
+)
+
+
+def _syntax_message(exc: TextXSyntaxError, text: str = "") -> str:
+    lines = text.splitlines()
+    if 0 < exc.line <= len(lines):
+        for pattern, hint in _RENAMED:
+            if pattern.match(lines[exc.line - 1]):
+                return f"syntax error: {hint}"
     message = str(exc.message)
     if "Expected" in message:
         expected = message.split("Expected", 1)[1].split(" at position")[0]

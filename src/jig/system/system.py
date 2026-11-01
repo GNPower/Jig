@@ -1,8 +1,8 @@
 """Simulations: boards in one Renode emulation, advanced in simulated time.
 
 ``Simulation`` creates a Renode session, builds each board into a machine
-(the SoC platform, the board's platform description, the SoC driver's
-overlay, storage images, interface ports), boots it, and advances time on its
+(the platform description Jig writes from the board file, storage images,
+ports on the board's external links), boots it, and advances time on its
 ``Scheduler``. Each step is one monitor round trip that also returns what
 every UART and CAN bus carried, time-stamped, so consoles and protocol
 endpoints always see the board's output up to the current simulated instant.
@@ -16,16 +16,19 @@ code, ``Simulation.run`` drives a coroutine to completion::
         sim.start()
         sim.run(dut.console.expect(r"ready", timeout=20))
 
-Every UART interface of a board gets its console when the machine is built,
-so a console holds what the board sent from the start of the run, however
-late the plan first reads it.
+Every external UART link of a board gets its console when the machine is
+built, so a console holds what the board sent from the start of the run,
+however late the plan first reads it. A console reads the bytes as text
+through a text view: Latin-1 text by default, or the view registered for a
+layer of the link's stack (``TEXT_VIEWS``): ``vt100`` renders the bytes as a
+terminal shows them (``TerminalText``).
 
 Before Renode starts, ``start`` checks that the files each board needs exist
 (``Machine.required_files``: firmware, storage images, register-map sources)
 and stops with a ConfigError naming each missing one.
 
-Power: a board starts powered on and booted, or powered off (board.yaml
-``power.initial``, or the plan's choice). A powered-off board's cores are
+Power: a board starts powered on and booted, or powered off (its ``power``
+setting, or the plan's choice). A powered-off board's cores are
 halted; powering it on runs its boot flow the first time and the SoC's
 power-on sequence, through reset, after a power-off. ``Machine.boot`` runs the
 boot flow again, which a board whose boot mode needs a debugger (a Zynq-7000
@@ -44,12 +47,11 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
-from typing import Any, TypeVar
+from typing import Any, Protocol, TypeVar
 
 from jig import project
 from jig.errors import ConfigError, ExpectTimeoutError, SimulationError
 from jig.ext import cosim
-from jig.renode import platforms
 from jig.renode.session import RenodeSession
 from jig.runtime.environment import BackgroundRegistry
 from jig.runtime.recorder import Recorder
@@ -60,13 +62,14 @@ from jig.runtime.scheduler import (
     WaitTimeoutError,
     seconds_to_ns,
 )
-from jig.system import boards, registry
+from jig.system import boards, generate, registry
 from jig.system.boards import Board
 from jig.system.renode_shim import RenodeConfig, find_renode, open_session
 from jig.system.socs import MachineConfig, SocDriver, driver_for
 from jig.transports import can as can_transport
 from jig.transports import uart as uart_transport
 from jig.transports.can import CanBusPort
+from jig.transports.terminal import Terminal, encode_key
 from jig.transports.uart import UartPort
 
 log = logging.getLogger(__name__)
@@ -74,6 +77,7 @@ log = logging.getLogger(__name__)
 T = TypeVar("T")
 
 DEFAULT_STEP = 0.010  # simulated seconds between port collections
+PROMPT_TIMEOUT = 10.0  # simulated seconds cli waits for the prompt, as expect does
 RECORDER_FLUSH_NS = 1_000_000_000  # the recorder's files reach the disk every simulated second
 ENV_KEEP_RUNS = "JIG_KEEP_RUNS"
 DEFAULT_KEEP_RUNS = 20
@@ -169,26 +173,149 @@ class BusContext:
         self.recorder.table(file, list(header), list(row))
 
 
+class TextView(Protocol):
+    """How a console turns what a board sent into the text plans match:
+    ``text`` since the run started, ``buffer`` since the last ``clear``.
+
+    A view may also define ``prompt_shown(pattern)``, whether the ``cli``
+    layer's prompt (a compiled regex) stands where the next command would be
+    typed; a terminal renderer can test the cursor's line, since a line
+    editor redraws its prompt while a command is half typed. Without it,
+    ``cli`` searches ``buffer``."""
+
+    @property
+    def text(self) -> str: ...
+
+    @property
+    def buffer(self) -> str: ...
+
+    def clear(self) -> None: ...
+
+
+class RawText:
+    """The bytes a board sent as Latin-1 text, decoded only when read, which
+    keeps a busy binary link that no plan reads as text cheap."""
+
+    def __init__(self, port: UartPort) -> None:
+        self.port = port
+        self._text = ""  # port.received[:self._text_end], decoded
+        self._text_end = 0
+        self._buffer = ""  # since the last clear(), decoded up to port.received[:_buffer_end]
+        self._buffer_end = 0
+
+    @property
+    def text(self) -> str:
+        received = self.port.received
+        if self._text_end < len(received):
+            self._text += received[self._text_end :].decode("latin-1")
+            self._text_end = len(received)
+        return self._text
+
+    @property
+    def buffer(self) -> str:
+        received = self.port.received
+        if self._buffer_end < len(received):
+            self._buffer += received[self._buffer_end :].decode("latin-1")
+            self._buffer_end = len(received)
+        return self._buffer
+
+    def clear(self) -> None:
+        self._buffer = ""
+        self._buffer_end = len(self.port.received)
+
+
+class TerminalText:
+    """The ``vt100`` layer's view: what the board sent, rendered as a
+    24-row terminal shows it (``jig.transports.terminal.Terminal``).
+
+    The terminal catches up with the port's record when the view is read,
+    so a console no plan reads costs nothing. ``text`` is everything
+    rendered since the run started, ``buffer`` the terminal's view since the
+    last ``clear()``: the cursor's line from where it stood, and every line
+    the board wrote, erased or moved onto since, each as it stands now."""
+
+    def __init__(self, port: UartPort) -> None:
+        self.port = port
+        self._terminal = Terminal()
+        self._rendered = 0  # port.received[:_rendered] has been fed
+
+    def _screen(self) -> Terminal:
+        received = self.port.received
+        if self._rendered < len(received):
+            self._terminal.feed(received[self._rendered :])
+            self._rendered = len(received)
+        return self._terminal
+
+    @property
+    def text(self) -> str:
+        return self._screen().text
+
+    @property
+    def buffer(self) -> str:
+        return self._screen().since_mark
+
+    def clear(self) -> None:
+        self._screen().mark()
+
+    def prompt_shown(self, pattern: re.Pattern[str]) -> bool:
+        """Whether the prompt stands where the next command would be typed:
+        on the cursor's line, ending at the cursor with nothing after it, on
+        a line the board reached after the last ``clear()``. A line editor
+        that redraws its prompt with a half-typed command after it doesn't
+        count, and neither does the prompt the command was typed after."""
+        terminal = self._screen()
+        if "\n" not in terminal.since_mark:
+            return False  # still on the line the command went out from
+        line = terminal.line
+        column = terminal.cursor[1]
+        if line[column:].strip():
+            return False
+        typed = line[:column]
+        return any(pattern.fullmatch(typed, start) for start in range(len(typed) + 1))
+
+
+TEXT_VIEWS: dict[str, Callable[[UartPort], TextView]] = {"vt100": TerminalText}
+"""Text views by protocol layer: a console on a link whose stack has one of
+these layers reads through its view, and any other console reads the bytes
+as Latin-1 text (``RawText``)."""
+
+
+def text_view(port: UartPort, layers: Sequence[str] = ()) -> TextView:
+    """The view a console on ``port`` reads through, for the layers of the
+    link's stack (top first)."""
+    for layer in layers:
+        factory = TEXT_VIEWS.get(layer)
+        if factory is not None:
+            return factory(port)
+    return RawText(port)
+
+
 class Console:
     """A CLI on a UART: the text the board sent and pattern waits, in simulated time.
 
     The text comes from the port's record of everything the board sent
     (``UartPort.received``), so a console made after the board started
     printing still holds that output, and so does its transcript. ``text``
-    and ``buffer`` decode only when read, which keeps a busy binary link
-    that no plan reads as text cheap."""
+    and ``buffer`` come from the console's text view (``text_view``);
+    ``raw`` and ``raw_buffer`` hold the same spans as the bytes the board
+    sent."""
 
     def __init__(
-        self, simulation: Simulation, port: UartPort, transcript: Path, eol: str = "\r"
+        self,
+        simulation: Simulation,
+        port: UartPort,
+        transcript: Path,
+        eol: str = "\r",
+        view: TextView | None = None,
+        prompt: str | None = None,
     ) -> None:
         self._simulation = simulation
         self.port = port
         self.eol = eol  # what ends a line the harness sends
-        self._text = ""  # port.received[:self._text_end], decoded
-        self._text_end = 0
-        self._buffer = ""  # since the last clear(), decoded up to port.received[:_buffer_end]
-        self._buffer_end = 0
+        self.prompt = prompt  # a regex: the cli layer's prompt
+        self.view = view if view is not None else RawText(port)
         self._last_data_ns = 0
+        self._raw_start = 0  # port.received[:_raw_start] came before the last clear()
         self._transcript = transcript.open("a", encoding="utf-8", newline="")
         if port.received:  # what the board sent before this console existed
             self._transcript.write(port.received.decode("latin-1"))
@@ -202,20 +329,22 @@ class Console:
     @property
     def text(self) -> str:
         """Everything the board sent on this UART since the run started."""
-        received = self.port.received
-        if self._text_end < len(received):
-            self._text += received[self._text_end :].decode("latin-1")
-            self._text_end = len(received)
-        return self._text
+        return self.view.text
 
     @property
     def buffer(self) -> str:
         """What the board sent since the last ``clear()`` (or the run's start)."""
-        received = self.port.received
-        if self._buffer_end < len(received):
-            self._buffer += received[self._buffer_end :].decode("latin-1")
-            self._buffer_end = len(received)
-        return self._buffer
+        return self.view.buffer
+
+    @property
+    def raw(self) -> bytes:
+        """The bytes the board sent since the run started, as sent."""
+        return bytes(self.port.received)
+
+    @property
+    def raw_buffer(self) -> bytes:
+        """The bytes the board sent since the last ``clear()``, as sent."""
+        return bytes(self.port.received[self._raw_start :])
 
     def _on_data(self, data: bytes, _stamps: list[int]) -> None:
         self._last_data_ns = self._simulation.now_ns
@@ -227,12 +356,19 @@ class Console:
 
     def clear(self) -> None:
         """Start the buffer afresh: only what arrives from now on."""
-        self._buffer = ""
-        self._buffer_end = len(self.port.received)
+        self.view.clear()
+        self._raw_start = len(self.port.received)
 
     def write(self, text: str) -> None:
         self.port.write(text.encode("latin-1"))
         # Quiet periods count from the last traffic in either direction.
+        self._last_data_ns = self._simulation.now_ns
+
+    def press(self, key: str) -> None:
+        """Send the bytes a terminal sends for a named key (``up``,
+        ``enter``, ``ctrl-c``: ``jig.transports.terminal.KEYS``); ValueError
+        names the keys for an unknown one."""
+        self.port.write(encode_key(key))
         self._last_data_ns = self._simulation.now_ns
 
     def send_line(self, line: str, terminator: str | None = None) -> None:
@@ -269,10 +405,28 @@ class Console:
         return self.buffer
 
     async def run(self, command: str, settle: float = 0.5) -> str:
-        """Send a command and return everything the board printed until it went quiet."""
+        """Send a command and return everything the board printed: through its
+        prompt when the ``cli`` layer names one (waiting up to
+        ``PROMPT_TIMEOUT`` simulated seconds), else until it went quiet for
+        ``settle`` seconds."""
         self.clear()
         self.send_line(command)
-        return await self.drain(settle)
+        prompt = self.prompt
+        if prompt is None:
+            return await self.drain(settle)
+        rx = re.compile(prompt)
+        shown = getattr(self.view, "prompt_shown", None)
+
+        def at_prompt() -> bool | None:
+            seen = shown(rx) if callable(shown) else rx.search(self.buffer)
+            return True if seen else None
+
+        await self._simulation.scheduler.wait_for(
+            at_prompt,
+            PROMPT_TIMEOUT,
+            error=lambda: ExpectTimeoutError(self.label, prompt, PROMPT_TIMEOUT, self.buffer),
+        )
+        return self.buffer
 
 
 class Machine:
@@ -286,6 +440,8 @@ class Machine:
         power: str = "on",
     ) -> None:
         self.simulation = simulation
+        # The family decides which sensors sit on an Analog.ADCChannelSource.
+        config.board = generate.with_channel_sources(config.board, driver)
         self.config = config
         self.driver = driver
         self.initial_power = power
@@ -309,25 +465,25 @@ class Machine:
     def console(self) -> Console:
         return self.console_on("console")
 
-    def console_on(self, interface: str) -> Console:
-        """The console on a UART interface. Every UART interface has one from
+    def console_on(self, link: str) -> Console:
+        """The console on an external UART link. Every one has a console from
         the moment the machine is built, recording what the board sends."""
-        console = self.consoles.get(interface)
+        console = self.consoles.get(link)
         if console is None:
             uarts = [i.name for i in self.board.interfaces if i.kind == "uart"]
-            if interface in uarts:
+            if link in uarts:
                 raise ConfigError(
-                    f"{self.name}: the console on {interface} exists once the simulation starts"
+                    f"{self.name}: the console on {link} exists once the simulation starts"
                 )
             raise ConfigError(
-                f"{self.name}: no UART interface {interface!r} (has: {', '.join(uarts) or 'none'})"
+                f"{self.name}: no external UART link {link!r} (has: {', '.join(uarts) or 'none'})"
             )
         return console
 
-    def port(self, interface: str) -> UartPort:
-        if interface not in self.ports:
-            raise ConfigError(f"{self.name}: no UART interface {interface!r}")
-        return self.ports[interface]
+    def port(self, link: str) -> UartPort:
+        if link not in self.ports:
+            raise ConfigError(f"{self.name}: no external UART link {link!r}")
+        return self.ports[link]
 
     def execute(self, command: str) -> str:
         """A monitor command in this machine's context."""
@@ -337,15 +493,20 @@ class Machine:
 
     # ------------------------------------------------------------- inputs
 
-    def set_sensor(self, name: str, volts: float) -> int:
-        """Drive a sensor input; returns the code the converter will report."""
+    def set_sensor(self, name: str, volts: float) -> int | None:
+        """Drive a sensor input; returns the code the converter will report
+        (None for a converter that reports no codes to the harness)."""
         sensor = self.board.sensor(name)
+        if sensor.source is not None:
+            self.execute(f"{sensor.source} Volts {volts!r}")
+            self.simulation.emit(self.name, "sensor", f"{name} = {volts:g} V")
+            return None
         self.execute(f"{sensor.adc} SetChannelVoltage {sensor.channel} {volts!r}")
         self.simulation.emit(self.name, "sensor", f"{name} = {volts:g} V")
         return self.sensor_code(name)
 
     def set_time(self, iso: str) -> None:
-        """Set the board's real-time clock (board.yaml ``rtc``)."""
+        """Set the board's real-time clock (its ``rtc`` setting)."""
         self.execute(f'{self._rtc()} SetDateTime "{iso}"')
         self.simulation.emit(self.name, "rtc", iso)
 
@@ -355,13 +516,18 @@ class Machine:
 
     def _rtc(self) -> str:
         if self.board.rtc is None:
-            raise ConfigError(f"board {self.board.name} names no real-time clock (board.yaml rtc)")
+            raise ConfigError(f"board {self.board.name} names no real-time clock (rtc setting)")
         return self.board.rtc
 
     def sensor_code(self, name: str, volts: float | None = None) -> int:
         """The code the sensor's converter reports now, or for an input of
         ``volts`` (the ADC model's CodeFor)."""
         sensor = self.board.sensor(name)
+        if sensor.source is not None:
+            raise ConfigError(
+                f"{self.name}: sensor {name}'s converter does not implement IAnalogInputs, "
+                "so it reports no codes to the harness"
+            )
         if volts is None:
             command = f"{sensor.adc} GetChannelCode {sensor.channel}"
         else:
@@ -434,20 +600,19 @@ class Machine:
     # ------------------------------------------------------------ building
 
     def required_files(self, *, boot: bool = True) -> list[tuple[str, Path]]:
-        """What the machine needs on disk, as (what it is, path): its platform
-        descriptions, the register-map sources and co-simulation inputs of
-        its options, the images its storage starts from and, when it will
-        boot, every firmware file board.yaml names plus what the SoC driver
-        adds through an optional ``required_files(config)`` method (for
-        example a file its own settings name)."""
-        files = [("platform description", path) for path in self.platform_files()]
+        """What the machine needs on disk, as (what it is, path): the board's
+        repl fragments, its register-map sources and co-simulation inputs,
+        the images its storage starts from and, when it will boot, every
+        firmware file the device names plus what the family's driver adds
+        through an optional ``required_files(config)`` method (for example a
+        file its own arguments name)."""
+        files = [("repl fragment", path) for path in self.board.repl]
         for source in self.config.register_map_sources():
             files.append((f"register map source for {source.target}", source.package))
             if source.module is not None:
                 files.append((f"register map source for {source.target}", source.module))
-        for choice in self.config.choices():
-            if choice.cosim is not None:
-                files += [(f"co-simulation input of {choice.name}", p) for p in choice.cosim.inputs]
+        for spec in self.board.cosim:
+            files += [(f"co-simulation input of {spec.peripheral}", p) for p in spec.inputs]
         for storage, image in self.config.storage_images.items():
             files.append((f"image for {storage}", image))
         if boot:
@@ -458,15 +623,10 @@ class Machine:
                 files += [(str(what), Path(path)) for what, path in found.items()]
         return files
 
-    def platform_files(self) -> list[Path]:
-        """The platform descriptions the machine loads, in order: the SoC
-        platform, the board's, then those its chosen options add."""
-        files = []
-        if self.board.soc_platform is not None:
-            files.append(platforms.path(self.board.soc_platform))
-        files.append(self.board.platform)
-        files += [c.platform for c in self.config.choices() if c.platform is not None]
-        return files
+    def description(self) -> str:
+        """The platform description Jig writes for the machine
+        (``jig.system.generate``): what ``machine.repl`` holds."""
+        return generate.description(self.board, self.driver, self.config)
 
     def _build(self, session: RenodeSession, *, own_time: bool = False) -> None:
         """Create the machine, load its platform and connect its interfaces.
@@ -474,29 +634,18 @@ class Machine:
         ``own_time`` gives the machine its own time source, which a system of
         several boards needs (see ``RenodeSession.create_machine``)."""
         self.config.workdir.mkdir(parents=True, exist_ok=True)
-        choices = self.config.choices()
         # Co-simulated RTL builds before Renode loads anything, so a failed
         # build stops the run with its log instead of a half-built machine.
-        libraries = {
-            choice.name: cosim.library(choice.cosim, choice.platform or self.board.platform)
-            for choice in choices
-            if choice.cosim is not None
-        }
-        includes = "".join(f'using "{path.as_posix()}"\n' for path in self.platform_files())
-        overlay = self.config.workdir / "machine.repl"
-        overlay.write_text(
-            f"{includes}\n{self.driver.overlay(self.config)}\n",
-            encoding="utf-8",
-            newline="\n",
-        )
+        libraries = {spec.peripheral: cosim.library(spec) for spec in self.board.cosim}
+        description = self.config.workdir / "machine.repl"
+        description.write_text(self.description(), encoding="utf-8", newline="\n")
         session.create_machine(self.name, own_time=own_time)
-        session.execute(f"machine LoadPlatformDescription @{overlay.as_posix()}")
+        session.execute(f"machine LoadPlatformDescription @{description.as_posix()}")
         self.driver.configure(self.config, session)
-        for choice in choices:
-            for command in choice.commands:
-                session.execute(command.format(workdir=self.config.workdir.as_posix()))
-            if choice.cosim is not None:
-                cosim.attach(session, choice.cosim, libraries[choice.name], self.config.workdir)
+        for command in self.board.device.commands:
+            session.execute(command)
+        for spec in self.board.cosim:
+            cosim.attach(session, spec, libraries[spec.peripheral], self.config.workdir)
         for interface in self.board.interfaces:
             if interface.kind == "uart":
                 port = UartPort.attach(
@@ -507,7 +656,12 @@ class Machine:
                 # Recorded from the start, whether or not a plan reads it as a console.
                 transcript = self.config.workdir / f"{interface.name}.log"
                 self.consoles[interface.name] = Console(
-                    self.simulation, port, transcript, interface.eol
+                    self.simulation,
+                    port,
+                    transcript,
+                    interface.eol,
+                    text_view(port, interface.stack),
+                    interface.prompt,
                 )
 
     def _start(self, session: RenodeSession) -> None:
@@ -576,23 +730,36 @@ class Simulation:
         boot: str | None = None,
         performance_mips: int | None = None,
         storage: dict[str, Path] | None = None,
-        options: dict[str, str] | None = None,
+        options: Mapping[str, Any] | None = None,
         power: str | None = None,
     ) -> Machine:
-        """Adds a board. ``options`` picks values for the board's options
-        (``board.yaml`` ``options``); the others take their defaults. ``power``
-        (``on`` or ``off``) overrides the board's ``power.initial``."""
+        """Adds a board, its board file evaluated for this machine: ``options``
+        picks values for the board's options (the others take their
+        defaults, jig.toml's ``[defaults] options`` first for a board given
+        by name), and the board file's ``workdir`` is the machine's
+        directory. ``power`` (``on`` or ``off``) overrides the board's
+        ``power`` setting."""
         if self._started:
             raise ConfigError("boards must be added before the simulation starts")
         if name in self.machines:
             raise ConfigError(f"a machine named {name!r} already exists")
         if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", name):
             raise ConfigError(f"machine name {name!r} must be an identifier")
-        definition = board if isinstance(board, Board) else boards.find(board)
+        workdir = (self.workdir / name).as_posix()
+        if isinstance(board, Board):
+            chosen = board.option_values if options is None else options
+            definition = board.evaluate(chosen, workdir) if board.file is not None else board
+        else:
+            definition = boards.find(board, options=options, workdir=workdir)
         plugins = registry.default()
         plugins.load_board(definition)
         driver = driver_for(definition)
         mode = boot or definition.default_boot
+        if definition.boot_modes and mode not in definition.boot_modes:
+            raise ConfigError(
+                f"{name}: board {definition.name} lists no boot mode {mode!r} "
+                f"(lists: {', '.join(definition.boot_modes)})"
+            )
         if mode not in driver.boot_modes:
             raise ConfigError(
                 f"{name}: boot mode {mode!r} is not one of {', '.join(driver.boot_modes)}"
@@ -612,7 +779,7 @@ class Simulation:
             performance_mips=performance_mips or definition.performance_mips,
             workdir=self.workdir / name,
             storage_images=dict(storage or {}),
-            options=definition.resolve_options(options),
+            options=dict(definition.option_values),
             hooks=plugins.hooks_for(definition),
         )
         machine = Machine(self, config, driver, initial)
@@ -622,17 +789,18 @@ class Simulation:
     def add_can_bus(
         self, name: str, *, bitrate: float = 1_000_000, members: list[tuple[str, str]] | None = None
     ) -> None:
-        """A CAN bus joining the named (machine, interface) pairs; the harness is a node on it."""
+        """A CAN bus joining the named (machine, external CAN link) pairs:
+        every controller on those links. The harness is a node on it."""
         if self._started:
             raise ConfigError("buses must be added before the simulation starts")
         if name in self._bus_specs:
             raise ConfigError(f"a bus named {name!r} already exists")
-        for machine_name, interface in members or []:
+        for machine_name, link in members or []:
             if machine_name not in self.machines:
                 raise ConfigError(f"bus {name}: no machine {machine_name!r}")
-            spec = self.machines[machine_name].board.interface(interface)
+            spec = self.machines[machine_name].board.interface(link)
             if spec.kind != "can":
-                raise ConfigError(f"bus {name}: {machine_name}.{interface} is not a CAN interface")
+                raise ConfigError(f"bus {name}: {machine_name}.{link} is not a CAN link")
         self._bus_specs[name] = (bitrate, list(members or []))
 
     def start(self, *, boot: bool = True) -> None:
@@ -680,9 +848,10 @@ class Simulation:
         observers = registry.default().bus_observers_for(d.source for d in definitions)
         for bus_name, (bitrate, members) in self._bus_specs.items():
             bus = CanBusPort.create(session, bus_name, bitrate)
-            for machine_name, interface in members:
-                peripheral = self.machines[machine_name].board.interface(interface).peripheral
-                bus.connect(machine_name, peripheral)
+            for machine_name, link in members:
+                spec = self.machines[machine_name].board.interface(link)
+                for peripheral in spec.peripherals or (spec.peripheral,):
+                    bus.connect(machine_name, peripheral)
             self.can_buses[bus_name] = bus
             context = BusContext(bus_name, bus, self.recorder)
             self.bus_observers[bus_name] = {

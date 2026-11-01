@@ -52,8 +52,13 @@ def test_globs_and_board_directories(tmp_path: Path) -> None:
     _cs(repo / "models" / "Other.cs")
     board = repo / "boards" / "example"
     board.mkdir(parents=True)
-    (board / "board.yaml").write_text(
-        "name: example\nroot: ../..\nmodels: ['models/**/*.cs']\n", encoding="utf-8"
+    (board / "board.jig").write_text(
+        'board "example" {\n'
+        '    root: "../.."\n'
+        '    models: ["../../models/**/*.cs"]\n'
+        '    device mcu: stm32(part: "STM32F407VG") { firmware: "x.elf" }\n'
+        "}\n",
+        encoding="utf-8",
     )
     model_set = models.board_model_set(board)
     assert model_set.name == "example"

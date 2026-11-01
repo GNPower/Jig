@@ -21,17 +21,17 @@ from jig.system.socs.stm32 import Stm32Driver
 from .conftest import FIXTURES
 
 
-def plugin_board(directory: Path, plugin: str, *, files: dict[str, str]) -> Path:
-    """A board.yaml naming ``plugin``, with the plugin's files beside it."""
+def plugin_board(directory: Path, plugin: str, *, files: dict[str, str], device: str = "") -> Path:
+    """A board.jig naming ``plugin``, with the plugin's files beside it."""
     directory.mkdir(parents=True, exist_ok=True)
     for name, text in files.items():
         target = directory / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, encoding="utf-8", newline="\n")
-    (directory / "x.repl").write_text("", encoding="utf-8")
-    path = directory / "board.yaml"
+    device = device or 'device mcu: stm32(part: "STM32F407VG") { firmware: "x.elf" }'
+    path = directory / "board.jig"
     path.write_text(
-        f"schema: 2\nname: {directory.name}\nsoc: stm32\nplatform: x.repl\nplugin: {plugin}\n",
+        f'board "{directory.name}" {{\n    plugin: "{plugin}"\n    {device}\n}}\n',
         encoding="utf-8",
         newline="\n",
     )
@@ -117,7 +117,7 @@ def test_two_boards_may_share_one_plugin_file(tmp_path: Path, _fresh_registry: R
             "p.py",
             r"register\(api\) failed: KeyError",
         ),
-        ({"p.py": "JIG_PLUGIN_API = 2\ndef register(api): pass\n"}, "p.py", "plugin API 2"),
+        ({"p.py": "JIG_PLUGIN_API = 1\ndef register(api): pass\n"}, "p.py", "plugin API 1"),
         ({"pkg/mod.py": ""}, "pkg", "plugin package .*pkg has no __init__.py"),
         ({"p.txt": ""}, "p.txt", "is not a .py file or a package"),
         (
@@ -138,8 +138,8 @@ def test_plugin_errors_name_the_board(
     assert board.source not in _fresh_registry.boards
 
 
-def test_the_api_version_is_one() -> None:
-    assert API_VERSION == 1 == PluginApi.version
+def test_the_api_version_is_two() -> None:
+    assert API_VERSION == 2 == PluginApi.version
     assert jig.plugin.__doc__ is not None and "Nothing outside this module is public" in (
         jig.plugin.__doc__
     )
@@ -175,7 +175,7 @@ def test_the_api_knows_its_board(tmp_path: Path) -> None:
         (lambda api: api.member("node", "ping", print), "node member 'ping' is built in"),
         (lambda api: api.member("bus", "frames", print), "bus member 'frames' is built in"),
         (lambda api: api.hk_codec("Bad Name", print), "codec name 'Bad Name'"),
-        (lambda api: api.soc_driver("Z80!", print), "SoC family 'Z80!'"),
+        (lambda api: api.device_family("Z80!", print), "device family 'Z80!'"),
         (lambda api: api.zynq_hooks(), "needs at least one of images"),
         (lambda api: api.zynq_hooks(images=3), "zynq_hooks images must be callable"),
         (lambda api: api.background("node", "beat", print, every=0), "positive number"),
@@ -234,7 +234,7 @@ def test_extension_members_are_global(_fresh_registry: Registry) -> None:
         _fresh_registry.commit(clash.staged)
 
 
-# ---------------------------------------------------------------- SoC drivers
+# ------------------------------------------------------------ device families
 
 
 def test_driver_for_follows_the_documented_order(
@@ -244,48 +244,64 @@ def test_driver_for_follows_the_documented_order(
         "class CustomDriver:\n"
         "    name = 'custom'\n"
         "    boot_modes = ('flash',)\n"
+        "    def arguments(self, values, where):\n"
+        "        if 'bad' in values:\n"
+        "            raise ValueError('no')\n"
+        "        return dict(values)\n"
         "    def overlay(self, config): return ''\n"
         "    def configure(self, config, session): pass\n"
         "    def boot(self, config, session): pass\n"
     )
-    # 1. soc_driver: file.py:Class beside the board.yaml
     directory = tmp_path / "custom"
-    path = plugin_board(directory, "p.py", files={"p.py": "def register(api): pass\n"})
-    (directory / "drivers.py").write_text(driver_source, encoding="utf-8")
-    path.write_text(
-        path.read_text().replace("soc: stm32", "soc: custom\nsoc_driver: drivers.py:CustomDriver"),
-        encoding="utf-8",
+    # 1. the device's driver setting: file.py:Class beside the board file
+    path = plugin_board(
+        directory,
+        "p.py",
+        files={"p.py": "def register(api): pass\n", "drivers.py": driver_source},
+        device='device d: custom(speed: 3) { driver: "drivers.py:CustomDriver" }',
     )
-    assert type(driver_for(boards.load(path))).__name__ == "CustomDriver"
+    board = boards.load(path)
+    assert board.soc == "custom" and board.soc_settings == {"speed": 3}
+    assert type(driver_for(board)).__name__ == "CustomDriver"
     # ... or module:Class
     path.write_text(
         path.read_text().replace("drivers.py:CustomDriver", "jig.system.socs.stm32:Stm32Driver"),
         encoding="utf-8",
     )
-    assert isinstance(driver_for(boards.load(path)), Stm32Driver)
-    # 2. the driver the board's plugin registered
+    with pytest.raises(ConfigError, match=r"stm32\(\) takes part"):  # Stm32Driver's arguments
+        driver_for(boards.load(path))
+    # 2. the family the board's plugin registered
     path.write_text(
-        path.read_text().replace("soc_driver: jig.system.socs.stm32:Stm32Driver\n", ""),
+        path.read_text().replace(' { driver: "jig.system.socs.stm32:Stm32Driver" }', " { }"),
         encoding="utf-8",
     )
     (directory / "p.py").write_text(
         "from .drivers import CustomDriver\n"
-        "def register(api):\n    api.soc_driver('custom', CustomDriver)\n",
+        "def register(api):\n    api.device_family('custom', CustomDriver)\n",
         encoding="utf-8",
     )
-    board = boards.load(path)
-    with pytest.raises(ConfigError, match="no SoC driver for 'custom'"):
+    board = boards.load(path)  # a family Jig does not know waits for the plugin
+    with pytest.raises(ConfigError, match="no device family 'custom'"):
         driver_for(board)
     _fresh_registry.load_board(board)
     assert type(driver_for(board)).__name__ == "CustomDriver"
+    # Without a plugin or a driver setting, an unknown family is an error at once.
+    alone = plugin_board(
+        tmp_path / "alone", "p.py", files={"p.py": ""}, device="device d: custom() { }"
+    )
+    alone.write_text(alone.read_text().replace('    plugin: "p.py"\n', ""), encoding="utf-8")
+    with pytest.raises(ConfigError, match=r"no device family 'custom' \(known: stm32, zynq7000\)"):
+        boards.load(alone)
 
 
-def test_the_soc_families_come_from_entry_points(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_device_families_come_from_entry_points(monkeypatch: pytest.MonkeyPatch) -> None:
     from importlib import metadata
 
     from jig.system import socs
 
-    installed = {entry.name: entry.value for entry in metadata.entry_points(group="jig.socs")}
+    installed = {
+        entry.name: entry.value for entry in metadata.entry_points(group="jig.device_families")
+    }
     assert installed == {
         "zynq7000": "jig.ext.zynq7000.driver:Zynq7000Driver",
         "stm32": "jig.system.socs.stm32:Stm32Driver",
@@ -299,6 +315,8 @@ def test_the_soc_families_come_from_entry_points(monkeypatch: pytest.MonkeyPatch
     # A source tree that was never installed still knows the two built in.
     assert isinstance(driver_for("stm32"), Stm32Driver)
     assert socs.families() == ["stm32", "zynq7000"]
+    with pytest.raises(ConfigError, match="no device family 'z80'"):
+        driver_for("z80")
 
 
 def test_zynq_hooks_reach_the_machine_config(tmp_path: Path, _fresh_registry: Registry) -> None:

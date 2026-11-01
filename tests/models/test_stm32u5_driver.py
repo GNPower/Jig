@@ -1,10 +1,10 @@
-"""Jig's stm32 SoC driver on the STM32U5 platforms (board.yaml soc_platform
-st/stm32u575 and st/stm32u595). The firmware is an ELF the test writes: a
+"""Jig's stm32 family on the STM32U5 platforms (parts STM32U575 and
+STM32U595: st/stm32u575 and st/stm32u595). The firmware is an ELF the test writes: a
 two-word vector table and a WFI loop, so no toolchain is needed. The driver
 boots it, tells the RCC each reset's cause (Pin for reset, PowerOn for the
 power-on reset), holds a powered-off board in a power-on reset so a running
 watchdog cannot restart it, and leaves Renode alone where the RCC records no
-causes. Through a Simulation, board.yaml sensors and rtc reach the U5 ADC4
+causes. Through a Simulation, a board file's sensors and rtc reach the U5 ADC4
 and RTC models, and both behave as the backup domain and the analog pins do
 across resets and power cycles."""
 
@@ -62,24 +62,20 @@ def idle_elf(path: Path, stack: int = 0x20030000) -> Path:
     return path
 
 
-def board_directory(root: Path, soc_platform: str) -> Path:
-    """A board on a Jig U5 platform: the ELF, sensors on ADC4 and the RTC."""
+def board_directory(root: Path, part: str) -> Path:
+    """A board on a Jig U5 platform: the ELF, a sensor on ADC4 and the RTC."""
     directory = root / "u5-board"
     directory.mkdir(parents=True)
     idle_elf(directory / "idle.elf")
-    (directory / "u5-board.repl").write_text("// the SoC platform holds everything\n")
-    (directory / "board.yaml").write_text(
-        "schema: 2\n"
-        "root: .\n"
-        "name: u5-board\n"
-        "soc: stm32\n"
-        f"soc_platform: {soc_platform}\n"
-        "platform: u5-board.repl\n"
-        "performance_mips: 160\n"
-        "stm32: {firmware: {elf: idle.elf}}\n"
-        "boot: {default: flash}\n"
-        "sensors: {temperature: {adc: adc4, channel: 13}}\n"
-        "rtc: rtc\n",
+    (directory / "board.jig").write_text(
+        'board "u5-board" {\n'
+        '    root: "."\n'
+        "    rtc: mcu.rtc\n"
+        f'    device mcu: stm32(part: "{part}", mips: 160) {{\n'
+        '        firmware: "idle.elf"\n'
+        "    }\n"
+        "    sensor temperature: mcu.adc4.channel[13]\n"
+        "}\n",
         encoding="utf-8",
     )
     return directory
@@ -88,7 +84,7 @@ def board_directory(root: Path, soc_platform: str) -> Path:
 @pytest.fixture
 def u5(bench: Bench, tmp_path: Path) -> tuple[Bench, Stm32Driver, MachineConfig]:
     """A U575 machine (no overlay: the platform alone) and a driver for it."""
-    board = boards.load(board_directory(tmp_path, "st/stm32u575") / "board.yaml")
+    board = boards.load(board_directory(tmp_path, "STM32U575ZIT6") / "board.jig")
     bench.execute(f"machine LoadPlatformDescription @{platforms.path('st/stm32u575').as_posix()}")
     config = MachineConfig(bench.name, board, "flash", 160, tmp_path / "work")
     return bench, Stm32Driver(), config
@@ -182,13 +178,15 @@ def test_power_off_before_boot_leaves_the_machine_alone(
     assert bench.text("rcc NextResetCause") == "Software"
 
 
-@pytest.mark.parametrize("soc_platform", ["st/stm32u575", "st/stm32u595"])
-def test_a_u5_board_through_a_simulation(tmp_path: Path, soc_platform: str) -> None:
-    board = boards.load(board_directory(tmp_path, soc_platform) / "board.yaml")
+@pytest.mark.parametrize(
+    ("part", "platform"), [("STM32U575ZIT6", "st/stm32u575"), ("STM32U595VJT6", "st/stm32u595")]
+)
+def test_a_u5_board_through_a_simulation(tmp_path: Path, part: str, platform: str) -> None:
+    board = boards.load(board_directory(tmp_path, part) / "board.jig")
     with Simulation(name="u5", workdir=tmp_path / "run") as simulation:
         dut = simulation.add_board("dut", board)
         simulation.start()
-        assert dut.platform_files()[0] == platforms.path(soc_platform)
+        assert f'using "{platform}.repl"' in dut.description()
         assert dut.set_sensor("temperature", 0.736) == 913
         dut.set_time("2026-10-09T12:00:00.5")
         simulation.run_for(1.0)
@@ -208,3 +206,27 @@ def test_a_u5_board_through_a_simulation(tmp_path: Path, soc_platform: str) -> N
             ("power", "off for 0.5 s"),
             ("power", "on"),
         ]
+
+
+def test_starting_voltages_on_one_converter_share_its_init_block(tmp_path: Path) -> None:
+    """Three sensors on ADC4 with starting voltages: the description gives
+    the converter one init block, and Renode sets every channel from it."""
+    path = board_directory(tmp_path, "STM32U575ZIT6") / "board.jig"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "    sensor temperature: mcu.adc4.channel[13]\n",
+            "    sensor temperature: mcu.adc4.channel[13] = 736 mV\n"
+            "    sensor supply: mcu.adc4.channel[0] = 1.65 V\n"
+            "    sensor battery: mcu.adc4.channel[1] = 3.3 V\n",
+        ),
+        encoding="utf-8",
+    )
+    with Simulation(name="u5", workdir=tmp_path / "run") as simulation:
+        dut = simulation.add_board("dut", boards.load(path))
+        simulation.start()
+        description = dut.description()
+        assert description.count("init add:") == 1
+        assert description.count("SetChannelVoltage") == 3
+        assert dut.sensor_code("temperature") == 913
+        assert dut.sensor_code("supply") == dut.sensor_code("supply", volts=1.65)
+        assert dut.sensor_code("battery") == dut.sensor_code("battery", volts=3.3)

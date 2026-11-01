@@ -8,12 +8,16 @@ plans set its inputs.
 
 ## Where models live and how they load
 
-Keep the `.cs` files in the board's repository and list them in
-board.yaml, as globs relative to board.yaml:
+Keep the `.cs` files in the board's repository and list them in the
+board file's `models` setting, as globs relative to the board file:
 
-```yaml
-models:
-  - ../../models/*.cs
+```jig
+board "my-board" {
+    models: ["../../models/*.cs"]
+    device mcu: stm32(part: "STM32F407VG") {
+        firmware: "build/app.elf"
+    }
+}
 ```
 
 When a session starts, Renode compiles Jig's own models first, then each
@@ -32,15 +36,15 @@ twice, which fails the compile.
 
 ## The contracts a plan relies on
 
-Plans reach board chips through board.yaml keys, and each key needs the
-named peripheral to implement one interface from
+Plans reach board chips through board file settings, and each setting
+needs the peripheral it names to implement one interface from
 `Antmicro.Renode.Peripherals.Jig.Contracts`:
 
 ```{list-table}
 :header-rows: 1
 :widths: 20 40 40
 
-* - board.yaml key
+* - Board file
   - Interface and members
   - What plans do with it
 * - `storage`
@@ -48,12 +52,13 @@ named peripheral to implement one interface from
     raw image file the device's contents and writes every change back to
     it
   - Start a run from an image file; keep writes across resets
-* - `power.restart`
+* - Every peripheral off `backup_supply`
   - `IPowerCycled`: `PowerCycle()`, which returns every volatile register
     to its power-up value and keeps non-volatile contents and external
     inputs
-  - Power the chip down and up with the board
-* - `sensors`
+  - Power the chip down and up with the board; a chip whose model
+    lacks the interface keeps running
+* - `sensor` lines
   - `IAnalogInputs`: `ChannelCount`, `SetChannelVoltage(channel, volts)`,
     `GetChannelCode(channel)` and `CodeFor(volts)`, the code an input
     voltage converts to
@@ -68,13 +73,13 @@ named peripheral to implement one interface from
 ```
 
 `jig check --contracts` builds each board's machine in Renode, without
-booting it, and confirms that every peripheral a board.yaml key names
-implements the interface that key needs, that a storage device's `Size`
-equals its `size` in board.yaml, and that each sensor's channel is below
-the converter's `ChannelCount`. A missing method shows up there, before a
-plan reaches it. Each interface's documentation comments in
-`jig/models/Contracts` give the units, the ranges and what survives a
-reset or a power cycle.
+booting it, and confirms that every peripheral a board file setting
+names implements the interface that setting needs, that a storage
+device's `Size` equals the `size` its peripheral line gives, and that
+each sensor's channel is below the converter's `ChannelCount`. A missing
+method shows up there, before a plan reaches it. Each interface's
+documentation comments in `jig/models/Contracts` give the units, the
+ranges and what survives a reset or a power cycle.
 
 ## Write the model
 
@@ -177,23 +182,28 @@ which did not.
 
 ## Wire it into the board
 
-Attach the model in the board's platform description, on chip select 0 of
-the Zynq-7000's first SPI controller:
+Declare the model as a peripheral of the board, wire it to chip select 0
+of the Zynq-7000's first SPI controller, and name its inputs:
 
-```text
-adc0: Acme.Sensors.ExampleAdc @ spi0 0
-    referenceVolts: 3.3
+```jig
+board "my-board" {
+    models: ["../../models/*.cs"]
+    device zynq: zynq7000(part: "XC7Z020-CLG484",
+                          clocks: {cpu_3x2x: 333.333333 MHz,
+                                   cpu_1x: 111.111111 MHz}) {
+        firmware: {app: "build/app.elf"}
+    }
+    peripheral adc0: "Acme.Sensors.ExampleAdc" (referenceVolts: 3.3)
+    link housekeeping: spi(controller: zynq.spi0, targets: {0: adc0})
+    sensor supply: adc0.channel[2]
+    sensor temperature: adc0.channel[5]
+}
 ```
 
-Then name its inputs in board.yaml:
-
-```yaml
-sensors:
-  supply: {adc: adc0, channel: 2}
-  temperature: {adc: adc0, channel: 5}
-power:
-  restart: [adc0]
-```
+Jig writes `adc0: Acme.Sensors.ExampleAdc @ spi0 0` into the platform
+description with `referenceVolts: 3.3`. The model implements
+`IPowerCycled`, so it restarts when the board's power cycles; listing
+it in `backup_supply` would keep it running.
 
 A plan can now set an input and learn the code the firmware will read:
 

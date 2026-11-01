@@ -19,23 +19,28 @@ that directory sees the example's boards. By the end you will have seen
 each kind of step a plan reports: console expectations, commands, waits,
 checks, CSP requests and log lines.
 
-## Step 1: Read the board definition
+## Step 1: Read the board file
 
-A plan names boards by definition. zed-a's is
-`examples/zedboard/boards/zed-a/board.yaml`:
+A plan names boards by the name of their directory. The example has one,
+`zedboard`, described by `examples/zedboard/boards/zedboard/board.jig`:
 
-```{literalinclude} ../../examples/zedboard/boards/zed-a/board.yaml
-:language: yaml
+```{literalinclude} ../../examples/zedboard/boards/zedboard/board.jig
+:language: jig
 ```
 
-`root: ../..` makes the example's directory the board's root, and
-`firmware.app` is relative to it: the ELF that `build.py` writes.
-`soc_platform` loads the Zynq-7000 platform Jig ships, and `platform`, a
-Renode platform description relative to this file, sets the ZedBoard's
-clocks, boot straps and DDR on top of it. `plugin` names the board plugin
-that zed-a and zed-b share; tutorial 2 uses it. The three interfaces are
-the names a plan uses: `a.console`, `a.kiss` and `a.can` for a board
-instance called `a`. {doc}`../user_manual/board_yaml` lists every key.
+`root: "../.."` makes the example's directory the board's root, and the
+firmware path is relative to it: the ELF that `build.py` writes for each
+node. `option node` lets a plan pick the build, zed-a for node 1 or zed-b
+for node 2, and `{node}` in the path and `address: node` use the choice.
+The device line describes the ZedBoard's Zynq-7020: its part, its boot
+straps, its 512 MiB of DDR and the clocks the firmware programs, from
+which Jig writes the Renode platform description (`jig platform zedboard`
+prints it). The device body says what the firmware runs: a CSP node, a
+command line on UART1, CSP over CAN, and, on node 1 only, CSP in KISS
+frames on UART0. `plugin` names the board plugin; tutorial 2 uses it. The
+three external links are the names a plan uses: `a.console`, `a.kiss` and
+`a.can` for a board instance called `a`.
+{doc}`../user_manual/board_files` describes every line.
 
 ## Step 2: Declare the system and wait for the banner
 
@@ -43,7 +48,7 @@ Give the plan a system of one board and a setup block:
 
 ```jig
 system "one ZedBoard" {
-    board a: "zed-a"
+    board a: "zedboard" (node: 1)
 }
 
 setup {
@@ -52,8 +57,9 @@ setup {
 }
 ```
 
-`board a: "zed-a"` builds a Renode machine called `a` from the zed-a
-definition. The setup block runs before any test. `expect` waits, in
+`board a: "zedboard" (node: 1)` builds a Renode machine called `a` from
+the zedboard board file, running node 1's firmware, which calls itself
+zed-a. The setup block runs before any test. `expect` waits, in
 simulated time, until the console has printed text matching the regular
 expression; `within: 2 s` sets the limit, and the default is 10 s. If the
 banner never comes, the setup fails, the plan stops, and the report shows
@@ -84,8 +90,9 @@ test "the console names the node and its links" {
 }
 ```
 
-`cli` clears the console buffer, sends the command with the interface's
-line ending (`eol: cr` in board.yaml), and returns everything the board
+`a.cli` uses the board's console, the external link whose interface runs
+`cli`. It clears the console buffer, sends the command with the `cli`
+layer's line ending (CR by default), and returns everything the board
 printed until it stayed quiet for 0.3 s of simulated time. Here that is:
 
 ```text
@@ -144,17 +151,22 @@ tests, and can take boards as arguments.
 ## Step 4: Add a host computer
 
 The example's host computer is CSP node 10 on zed-a's serial link. Add
-one to the system, so the harness runs it:
+one to the system, so the harness runs it, and a link that joins it to
+the board's `kiss` link:
 
 ```jig
 system "one ZedBoard" {
-    board a: "zed-a"
-    node host: csp(address: 10, link: a.kiss)
+    board a: "zedboard" (node: 1)
+    node host: csp(address: 10) over kiss
+    link ground: uart(members: [a.kiss, host])
 }
 ```
 
-The harness speaks KISS on that UART, adds the CRC-32C the firmware
-expects, and answers pings like a libcsp node. Two tests use it:
+`csp(address: 10) over kiss` is a CSP node that sends its packets in KISS
+frames, which is what the board's UART0 runs. The harness adds the
+CRC-32C the firmware expects and answers pings like a libcsp node. A
+node's layers must fit its link: `over kiss` on a CAN link stops the plan
+before it starts, naming the layer that does not fit. Two tests use it:
 
 ```jig
 test "the host computer pings zed-a" {
@@ -207,22 +219,24 @@ jig run examples/zedboard/plans/one_zedboard.jig --html out/one_zedboard.html
 
 ```text
 PLAN  examples\zedboard\plans\one_zedboard.jig
-  board a: zed-a, jtag boot, 100 MIPS
-  node host: CSP 10 on link a.kiss
+  board a: zedboard, jtag boot, 100 MIPS, node 1
+  link ground: UART 115200 baud, a.kiss, host
+  node host: CSP 10 over kiss on ground
   PASS  the console names the node and its links  (0.33 s)
   PASS  help lists every command  (0.33 s)
   PASS  uptime follows simulated time  (2.62 s)
   PASS  the host computer pings zed-a  (0.01 s)
   PASS  the status record names node 1  (0.01 s)
   PASS  port 6 answers the uptime in whole seconds  (0.63 s)
-  6 passed, 0 failed, 0 errors (4.0 s simulated, 10.8 s wall); fingerprint 848445d787d95a77
+  6 passed, 0 failed, 0 errors (4.0 s simulated, 6.5 s wall); fingerprint 848445d787d95a77
 
 report: ...\out\one_zedboard.html
 ```
 
-Two log lines about Renode's start are left out above. The time after
+Two log lines about Renode's start are left out above. The system lines
+list the board with its options, the link and the node. The time after
 each test is simulated time; the wall time at the end includes Renode's
-start and the compile of Jig's models, 6.5 s of the 11.5 s in this run on
+start and the compile of Jig's models, 4.1 s of the 6.5 s in this run on
 Windows.
 
 Open `out/one_zedboard.html`. Each test lists its steps with the simulated

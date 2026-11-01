@@ -81,8 +81,9 @@ dev = [
 [project.scripts]
 jig = "jig.cli:main"
 
-# SoC families: a board's `soc:` names one (board.yaml `soc_driver:` overrides).
-[project.entry-points."jig.socs"]
+# Device families: a board file's `device NAME: FAMILY(...)` names one (a device's
+# `driver:` setting overrides).
+[project.entry-points."jig.device_families"]
 zynq7000 = "jig.ext.zynq7000.driver:Zynq7000Driver"
 stm32 = "jig.system.socs.stm32:Stm32Driver"
 

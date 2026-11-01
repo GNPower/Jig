@@ -1,0 +1,24 @@
+# An STM32 board whose plugin is a package (plugin/__init__.py plus
+# submodules). Its plugin defines a board member and a node member under the
+# same names as example-node's, and a module of the same name, to show the two
+# never collide. Its models glob names example-node's model again: one model
+# set per repository holds each file once.
+board "example-package" {
+    description: "STM32 test fixture with a package plugin"
+    root: "../.."
+    models: ["../example-node/models/*.cs"]
+    plugin: "plugin"
+
+    device mcu: stm32(part: "STM32U575ZIT6", vector_table: 0x08004000, mips: 160) {
+        firmware: "build/package.elf"
+        boot flash
+        protocol csp(address: 2, housekeeping: {port: 6, request: [], codec: "example-uptime"})
+        interface usart1: cli
+        interface usart2: csp over kiss
+        interface fdcan1: csp over cfp
+    }
+
+    external link console: uart(baud: 115200, members: [mcu.usart1])
+    external link kiss: uart(baud: 115200, members: [mcu.usart2])
+    external link can: can(bitrate: 1 Mbit/s, members: [mcu.fdcan1])
+}

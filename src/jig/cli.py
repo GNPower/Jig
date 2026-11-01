@@ -2,7 +2,7 @@
 
 Exit codes: 0 everything passed; 1 a test, a teardown or a board check failed,
 or a repeated plan gave more than one fingerprint; 2 a usage or configuration
-error (arguments, jig.toml, board.yaml, a plan that does not parse); 3 an
+error (arguments, jig.toml, a board file, a plan that does not parse); 3 an
 infrastructure error (Renode, a model compile, a firmware build, a Jig bug);
 130 interrupted. With several plans, the highest code wins.
 """
@@ -102,7 +102,23 @@ def _cmd_boards(args: argparse.Namespace) -> int:
     width = max(len(name) for name in found)
     for name, entry in found.items():
         print(f"{name:<{width}}  {entry.path}  ({entry.origin})")
+        for line in _board_summary(name):
+            print(f"    {line}")
     return EXIT_PASS
+
+
+def _board_summary(name: str) -> list[str]:
+    """A board's description and options, evaluated with the defaults."""
+    from jig.errors import ConfigError
+    from jig.system import boards
+
+    try:
+        board = boards.find(name)
+    except ConfigError as exc:
+        return [f"does not load: {exc}"]
+    lines = [board.description] if board.description else []
+    lines += [f"option {option.name}: {option.describe()}" for option in board.options.values()]
+    return lines
 
 
 def _cmd_boot(args: argparse.Namespace) -> int:
@@ -248,7 +264,8 @@ def _cmd_list(args: argparse.Namespace) -> int:
 
 def _contract_problems(board: Board, args: argparse.Namespace) -> list[str]:
     """Build the board's machine in Renode, without booting it, and check each
-    peripheral board.yaml names against the contract the harness calls."""
+    peripheral the board's settings name against the contract the harness
+    calls."""
     from jig.system.system import Simulation
 
     # Through the import system, so a stand-in in sys.modules (tests) is honoured.
@@ -259,39 +276,69 @@ def _contract_problems(board: Board, args: argparse.Namespace) -> list[str]:
         renode=args.renode,
         allow_untested_renode=args.allow_untested_renode,
     ) as simulation:
-        simulation.add_board("dut", board)
+        machine = simulation.add_board("dut", board)
         simulation.start(boot=False)
-        return [str(problem) for problem in contracts.verify(simulation.session, "dut", board)]
+        found = contracts.verify(simulation.session, "dut", machine.board)
+        return [str(problem) for problem in found]
 
 
 def _cmd_check(args: argparse.Namespace) -> int:
-    from jig.system import boards, registry
-    from jig.system.socs import driver_for
+    from jig.errors import ConfigError
+    from jig.system import boards, checks
 
     names = args.boards or boards.available()
+    options = _board_options(args.option)
     failed = 0
     for name in names:
-        board = boards.find(name)
-        registry.default().load_board(board)
-        problems = driver_for(board).check(board)
-        # An extension's section can say what is wrong with it once the
-        # board's plugin has loaded (a codec nobody registered, say).
-        for section in board.sections.values():
-            check = getattr(section, "problems", None)
-            if callable(check):
-                problems += list(check())
-        if args.contracts:
-            problems += _contract_problems(board, args)
+        try:
+            # As in jig run, an option applies to the boards that have it.
+            offered = boards.board_file(name).options
+            board = boards.find(name, options={k: v for k, v in options.items() if k in offered})
+        except ConfigError as exc:
+            if name not in boards.catalog():
+                raise
+            problems = [str(exc)]
+        else:
+            problems = checks.problems(board)
+            if args.contracts and not problems:
+                problems += _contract_problems(board, args)
         if problems:
             failed += 1
             print(f"{name}: {len(problems)} problem(s)")
             for problem in problems:
                 print(f"  {problem}")
-        elif board.clocks:
-            print(f"{name}: ok ({len(board.clocks)} clocks match the hardware design)")
         else:
             print(f"{name}: ok")
     return EXIT_FAILURE if failed else EXIT_PASS
+
+
+def _cmd_platform(args: argparse.Namespace) -> int:
+    from jig.system import boards, generate, registry
+    from jig.system.boardfile import PLACEHOLDER_WORKDIR
+    from jig.system.socs import MachineConfig, driver_for
+
+    board = boards.find(args.board, options=_board_options(args.option))
+    plugins = registry.default()
+    plugins.load_board(board)
+    driver = driver_for(board)
+    config = MachineConfig(
+        name="dut",
+        board=board,
+        boot=board.default_boot,
+        performance_mips=board.performance_mips,
+        workdir=Path(PLACEHOLDER_WORKDIR),
+        options=dict(board.option_values),
+        hooks=plugins.hooks_for(board),
+    )
+    text = generate.description(board, driver, config)
+    if args.output:
+        target = Path(args.output)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8", newline="\n")
+        print(f"wrote {target.resolve()}")
+    else:
+        sys.stdout.write(text)
+    return EXIT_PASS
 
 
 # -------------------------------------------------------------------- parser
@@ -325,15 +372,30 @@ def build_parser() -> argparse.ArgumentParser:
     listing = sub.add_parser("boards", help="list the boards on the search path")
     listing.set_defaults(func=_cmd_boards)
 
-    check = sub.add_parser("check", help="validate board definitions against the hardware design")
+    check = sub.add_parser(
+        "check", help="check board files: devices, stacks, the platform description"
+    )
     check.add_argument("boards", nargs="*", help="board names (default: all)")
     check.add_argument(
         "--contracts",
         action="store_true",
         help="also build each board in Renode and check its peripherals' contracts",
     )
+    check.add_argument(
+        "--option", action="append", metavar="NAME=VALUE", help="board option (repeatable)"
+    )
     add_renode_options(check)
     check.set_defaults(func=_cmd_check)
+
+    platform = sub.add_parser(
+        "platform", help="print the platform description Jig writes for a board"
+    )
+    platform.add_argument("board", help="board name (on the board search path)")
+    platform.add_argument(
+        "--option", action="append", metavar="NAME=VALUE", help="board option (repeatable)"
+    )
+    platform.add_argument("-o", "--output", help="write it to this file instead (UTF-8)")
+    platform.set_defaults(func=_cmd_platform)
 
     boot = sub.add_parser("boot", help="boot a board and show its console")
     boot.add_argument("board", help="board name (on the board search path)")

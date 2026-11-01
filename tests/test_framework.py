@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import time
 import xml.etree.ElementTree as ET
@@ -20,111 +21,69 @@ from jig.transports.can import parse_frames
 from .conftest import FIXTURES
 
 
-def test_fixture_board_definition() -> None:
+def test_the_fixture_options_pick_a_model_or_the_rtl() -> None:
     board = boards.find("example-zynq")
     assert board.soc == "zynq7000"
-    assert board.platform.name == "example-zynq.repl"
-    assert board.performance_mips == 120
-    assert board.default_boot == "jtag"
-    assert board.interface("console").peripheral == "uart1"
-    assert board.interface("console").settings == {"baud": 115200}
-    assert board.interface("console").eol == "\r"
-    assert board.interface("kiss").peripheral == "uart0"
-    assert board.interface("can").kind == "can"
-    assert {s.name: s.size for s in board.storage} == {"flash0": 0x1000000}
-    assert board.section("csp").address == 5
-    assert board.sensor("supply").channel == 2
-    assert board.rtc == "rtc0"
-    assert board.power_restart == ("flash0", "adc0")
-    assert board.power_initial == "on"
-    assert board.register_maps == ()
-    assert board.source == FIXTURES / "boards" / "example-zynq" / "board.yaml"
-    # Repository paths resolve against the board's root (root: ../..).
-    assert board.root == FIXTURES
-    assert board.firmware["app"] == (FIXTURES / "build" / "app.elf").resolve()
+    assert board.source == FIXTURES / "boards" / "example-zynq" / "board.jig"
     pl = board.options["pl"]
     assert pl.default == "model"
-    assert set(pl.choices) == {"model", "rtl"}
-    targets = {source.target for source in pl.choice("model").register_maps}
-    assert targets == {"block.registerMap"}
-    rtl = pl.choice("rtl")
-    assert rtl.cosim is not None and rtl.cosim.peripheral == "block"
-    assert rtl.platform is not None and rtl.platform.name == "rtl.repl"
-    assert rtl.commands == ("block Trace @{workdir}/block.vcd",)
-    assert rtl.cosim.inputs == ((FIXTURES / "hdl").resolve(),)
+    assert set(pl.choices or {}) == {"model", "rtl"}
+    (block,) = board.device.ips
+    assert (block.model, block.on, block.cosim) == (
+        "Example.ExampleBlock",
+        (0x43C00000, 0x43C00FFF),
+        None,
+    )
+    assert {source.target for source in board.register_maps} == {"block.registerMap"}
+    assert board.cosim == () and board.device.commands == ()
+    rtl = boards.find("example-zynq", options={"pl": "rtl"}, workdir="W:/run/dut")
+    (block,) = rtl.device.ips
+    assert block.model == "CoSimulated.CoSimulatedPeripheral"
+    assert block.properties == {"frequency": 20_000_000, "limitBuffer": 1000}
+    (spec,) = rtl.cosim
+    assert spec.peripheral == "block" and spec.frequency == 20_000_000
+    assert spec.inputs == ((FIXTURES / "hdl").resolve(),)
+    assert spec.context == "trace=W:/run/dut/block.vcd"
+    assert rtl.device.commands == ("block Trace @W:/run/dut/block.vcd",)
+    assert rtl.register_maps == ()
 
 
 def test_board_options_resolve_to_defaults_and_choices() -> None:
     board = boards.find("example-zynq")
     assert board.resolve_options(None) == {"pl": "model"}
     assert board.resolve_options({"pl": "rtl"}) == {"pl": "rtl"}
-    with pytest.raises(ConfigError, match="not one of model, rtl"):
+    with pytest.raises(ConfigError, match="option pl is one of model, rtl, not fpga"):
         board.resolve_options({"pl": "fpga"})
     with pytest.raises(ConfigError, match="no option boot_rom"):
         board.resolve_options({"boot_rom": "x"})
 
 
-def test_board_option_default_must_be_a_choice(tmp_path: Path) -> None:
-    (tmp_path / "x.repl").write_text("")
-    path = tmp_path / "board.yaml"
-    path.write_text(
-        "schema: 2\nname: x\nsoc: zynq7000\nplatform: x.repl\n"
-        "options:\n  pl:\n    default: rtl\n    model: {platform: x.repl}\n"
+def test_project_default_options_apply_to_boards_that_have_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "jig.toml").write_text(
+        f'[paths]\nboards = ["{(FIXTURES / "boards").as_posix()}"]\n'
+        '[defaults]\noptions = {pl = "rtl", node = 2}\n',
+        encoding="utf-8",
     )
-    with pytest.raises(ConfigError, match="default 'rtl' is not one of its choices"):
-        boards.load(path)
+    monkeypatch.setenv("JIG_PROJECT", str(tmp_path))
+    assert boards.find("example-zynq").option_values == {"pl": "rtl"}
+    assert boards.find("example-zynq", options={"pl": "model"}).option_values == {"pl": "model"}
+    assert boards.find("example-node").option_values == {}
 
 
-def test_cosim_clock_and_sources(tmp_path: Path) -> None:
-    board = boards.find("example-zynq")
-    rtl = board.options["pl"].choice("rtl")
-    assert rtl.cosim is not None and rtl.platform is not None
-    assert cosim.clock_hz(rtl.cosim, rtl.platform) == 20_000_000
-    listed = cosim.listed_sources(rtl.cosim.sources)
+def test_cosim_clock_and_sources() -> None:
+    (spec,) = boards.find("example-zynq", options={"pl": "rtl"}).cosim
+    assert cosim.clock_hz(spec) == 20_000_000
+    listed = cosim.listed_sources(spec.sources)
     assert [path.name for path in listed] == ["example_block.sv", "example_top.sv"]
-    description = tmp_path / "odd.repl"
-    description.write_text(
-        "block: CoSimulated.CoSimulatedPeripheral @ sysbus 0x0\n    frequency: 1500\n"
-    )
     with pytest.raises(ConfigError, match="whole number of MHz"):
-        cosim.clock_hz(rtl.cosim, description)
+        cosim.clock_hz(dataclasses.replace(spec, frequency=1500))
 
 
 def test_unknown_board_lists_the_known_ones() -> None:
     with pytest.raises(ConfigError, match="example-stm32, example-zynq"):
         boards.find("no-such-board")
-
-
-def test_board_name_must_match_its_directory(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    directory = tmp_path / "boards" / "alpha"
-    directory.mkdir(parents=True)
-    (directory / "a.repl").write_text("")
-    (directory / "board.yaml").write_text("schema: 2\nname: beta\nsoc: stm32\nplatform: a.repl\n")
-    monkeypatch.setenv("JIG_PROJECT", str(tmp_path))
-    assert boards.available() == ["alpha"]
-    with pytest.raises(ConfigError, match="differs from its directory"):
-        boards.find("alpha")
-
-
-def test_board_schema_is_checked(tmp_path: Path) -> None:
-    (tmp_path / "x.repl").write_text("")
-    path = tmp_path / "board.yaml"
-    path.write_text("schema: 99\nname: x\nsoc: zynq7000\nplatform: x.repl\n")
-    with pytest.raises(ConfigError, match="schema"):
-        boards.load(path)
-
-
-def test_board_interface_kind_is_checked(tmp_path: Path) -> None:
-    (tmp_path / "x.repl").write_text("")
-    path = tmp_path / "board.yaml"
-    path.write_text(
-        "schema: 2\nname: x\nsoc: zynq7000\nplatform: x.repl\n"
-        "interfaces:\n  radio: {kind: spacewire, peripheral: sw0}\n"
-    )
-    with pytest.raises(ConfigError, match="spacewire"):
-        boards.load(path)
 
 
 def test_artifact_cache_builds_once_per_input(tmp_path: Path) -> None:

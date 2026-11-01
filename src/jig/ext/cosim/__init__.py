@@ -1,7 +1,7 @@
 """RTL co-simulation: building Verilated models and attaching them to Renode.
 
-A board option can put RTL in place of a peripheral model (``cosim`` in the
-option's choice, see :class:`jig.system.boards.CosimSpec`). The RTL builds into
+A board file can put RTL in place of a model (``ip NAME: cosim(...)``, see
+:class:`jig.system.boards.CosimSpec`). The RTL builds into
 a shared library that Renode's ``CoSimulatedPeripheral`` loads in library mode:
 the model runs inside the Renode process, clocked by the emulation, and the
 peripheral forwards bus accesses and interrupts.
@@ -39,7 +39,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from jig import artifacts, project, repl
+from jig import artifacts, project
 from jig.errors import ConfigError, ToolchainError
 from jig.renode.discover import RenodeInstall
 from jig.renode.session import RenodeSession
@@ -277,16 +277,15 @@ def build_library(spec: CosimBuild, *, renode: RenodeInstall | None = None) -> P
     return library
 
 
-# ------------------------------------------------------- board options
+# ---------------------------------------------------------- board files
 
 
-def clock_hz(spec: CosimSpec, description: Path) -> int:
-    """The model clock: the co-simulated peripheral's ``frequency`` in the
-    platform description ``description``."""
-    value = repl.properties(description).get(spec.peripheral, {}).get("frequency")
+def clock_hz(spec: CosimSpec) -> int:
+    """The model clock: the co-simulated peripheral's ``frequency``."""
+    value = spec.frequency
     if not isinstance(value, int) or value <= 0 or value % 1_000_000:
         raise ConfigError(
-            f"{description.name}: {spec.peripheral}.frequency must be a whole number of MHz "
+            f"ip {spec.peripheral}: frequency must be a whole number of MHz "
             f"(the RTL is built for that clock), got {value!r}"
         )
     return value
@@ -314,7 +313,7 @@ def listed_sources(file_list: Path, root: Path | None = None) -> list[Path]:
 
 def spec_root(spec: CosimSpec) -> Path:
     """Where a board's co-simulation build runs and its file list starts: the
-    board's root (``CosimSpec.root``, board.yaml schema 2), else the project root."""
+    board's root (``CosimSpec.root``), else the project root."""
     root: Path | None = getattr(spec, "root", None)
     return root if root is not None else project.root()
 
@@ -341,14 +340,13 @@ def _tool_version(command: list[str]) -> str:
     return (result.stdout or result.stderr).strip().splitlines()[0]
 
 
-def library(spec: CosimSpec, description: Path) -> Path:
-    """Build (or reuse) the library for ``spec`` at the clock the platform
-    description ``description`` sets."""
+def library(spec: CosimSpec) -> Path:
+    """Build (or reuse) the library for ``spec`` at its peripheral's ``frequency``."""
     if platform.system() != "Linux":
         raise ToolchainError(
             "RTL co-simulation needs Linux (Verilator, GHDL, Renode's IntegrationLibrary)"
         )
-    mhz = clock_hz(spec, description) // 1_000_000
+    mhz = clock_hz(spec) // 1_000_000
     verilator = _tool_version(["verilator", "--version"])
     if not verilator:
         raise ToolchainError("verilator is not on PATH")
@@ -382,9 +380,9 @@ def library(spec: CosimSpec, description: Path) -> Path:
 def attach(session: RenodeSession, spec: CosimSpec, path: Path, workdir: Path) -> None:
     """Load the library into the co-simulated peripheral of the selected machine.
 
-    The context string reaches the model before it initialises, so it is set
-    first; Renode refuses to change it once the library is loaded."""
+    The context string (the board file filled ``{workdir}`` in already)
+    reaches the model before it initialises, so it is set first; Renode
+    refuses to change it once the library is loaded."""
     if spec.context:
-        context = spec.context.format(workdir=workdir.as_posix())
-        session.execute(f'{spec.peripheral} SimulationContextLinux "{context}"')
+        session.execute(f'{spec.peripheral} SimulationContextLinux "{spec.context}"')
     session.execute(f"{spec.peripheral} SimulationFilePathLinux @{path.as_posix()}")

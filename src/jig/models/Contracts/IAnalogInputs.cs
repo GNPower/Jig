@@ -1,6 +1,6 @@
 //
 // Contract for an analog-to-digital converter whose inputs a test drives
-// (board.yaml sensors.<name>.adc and sensors.<name>.channel).
+// (a board file's sensor lines: sensor NAME: adc.channel[N]).
 //
 namespace Antmicro.Renode.Peripherals.Jig.Contracts
 {

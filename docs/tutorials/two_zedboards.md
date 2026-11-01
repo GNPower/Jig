@@ -27,10 +27,11 @@ zed-a forwarding it.
 import "zed.jig"
 
 system "two ZedBoards on CAN" {
-    board a: "zed-a"
-    board b: "zed-b"
-    bus can0: can(bitrate: 1 Mbit/s, members: [a.can, b.can])
-    node host: csp(address: 10, link: a.kiss)
+    board a: "zedboard" (node: 1)
+    board b: "zedboard" (node: 2)
+    link can0: can(bitrate: 1 Mbit/s, members: [a.can, b.can])
+    node host: csp(address: 10) over kiss
+    link ground: uart(members: [a.kiss, host])
 }
 
 setup {
@@ -41,12 +42,17 @@ setup {
 }
 ```
 
-`can(...)` joins the CAN interfaces of both boards. The harness carries the
-frames between them: it puts each frame on the bus at the bit rate given
-here, acknowledges frames like any other node on the bus, and watches every
-frame that passes. A declaration can only name what an earlier one
-created, so the bus comes after the boards and the node after the board
-whose interface it uses.
+Both boards come from the one `zedboard` board file; the `node` option
+gives `a` the zed-a firmware and `b` the zed-b firmware. `link can0:
+can(...)` joins the boards' `can` links, the external CAN link the board
+file declares on each, into one bus. The harness carries the frames
+between them: it puts each frame on the bus at the bit rate, acknowledges
+frames like any other node on the bus, and watches every frame that
+passes. The bit rate comes from the boards' links, and a system link that
+states one, as this one does, must agree with them. `link ground` joins
+the host computer to zed-a's `kiss` link, as in tutorial 1. Declarations
+come in any order: Jig declares the boards first, then the nodes, then
+the links.
 
 `import "zed.jig"` brings in the procedures of
 `examples/zedboard/lib/zed.jig`. Jig looks for a plain file name beside the
@@ -150,9 +156,9 @@ packet. The run directory keeps every packet the bus carried in
 ## Step 5: Decode the status records
 
 The board plugin also registers a decoder for the 36-byte status record,
-and each board definition names it as the board's housekeeping codec on
-port 10 (`csp.housekeeping` in board.yaml). `host.hk(board)` sends the
-request and returns the decoded record:
+and the board file names it as the board's housekeeping codec on port 10,
+in the `housekeeping` map of the device's `protocol csp(...)`.
+`host.hk(board)` sends the request and returns the decoded record:
 
 ```jig
 test "zed-a counts the packets it forwards" {
@@ -206,12 +212,10 @@ two_zedboards.jig:69:9: <plain connection 10:31 -> 5:1>: no reply within
 - Add `log text(host.stats)` at the end of a test to see the host
   computer's counters: packets sent and received, CRC errors,
   retransmissions.
-- Change the bus bit rate to `500 kbit/s`. The firmware still runs its
-  controller at 1 Mbit/s, so the bus drops every frame and
-  `renode/renode.log` in the run directory logs each one as
-  `a.can0 transmits at 1000000 bit/s on a 500000 bit/s bus: frame lost`.
-  The four tests that cross the bus fail; the ping to the absent node
-  still passes.
+- Change the system link's bit rate to `500 kbit/s`. The plan stops
+  before Renode starts, with exit code 2: the boards' `can` links state
+  1 Mbit/s, the rate the firmware sets its controller to, and a system
+  link's rate has to agree with them.
 - Open `can0.packets.csv` in the run directory and find the two halves of
   the 200-byte ping.
 
@@ -221,5 +225,5 @@ two_zedboards.jig:69:9: <plain connection 10:31 -> 5:1>: no reply within
 a check of each board's frame counters against what the bus carried, a
 link outage and a power cycle of zed-b. {doc}`profiles_timelines` runs
 work on a schedule and records values over time.
-{doc}`../user_manual/library` lists every member of boards, buses and
+{doc}`../user_manual/library` lists every member of boards, links and
 nodes.

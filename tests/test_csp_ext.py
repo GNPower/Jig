@@ -14,7 +14,7 @@ from jig.ext.csp import protocol as csp
 from jig.ext.csp.dsl import CspDeclaration, csp_node, ping_payload, rdp_options
 from jig.ext.csp.node import CspError, CspNode
 from jig.ext.csp.rdp import RdpOptions
-from jig.lang.library import DslError, InterfaceRef
+from jig.lang.library import DslError
 from jig.runtime.scheduler import Scheduler
 from jig.system import boards
 from jig.testing import FakeBoard, FakeClock, FakeSimulation, run_source
@@ -48,7 +48,8 @@ def test_ping_payloads_of_any_size(tmp_path: Path, monkeypatch: pytest.MonkeyPat
         """
         system {
             board dut: "example-node" (power: "on")
-            node gs: csp(address: 10, link: dut.kiss)
+            node gs: csp(address: 10) over kiss
+            link ground: uart(members: [dut.kiss, gs])
         }
         test "sizes" {
             for size in [0, 255, 256, 300] {
@@ -195,7 +196,8 @@ def test_cmp_from_a_plan(tmp_path: Path) -> None:
         """
         system {
             board dut: "example-node" (power: "on")
-            node gs: csp(address: 10, link: dut.kiss)
+            node gs: csp(address: 10) over kiss
+            link ground: uart(members: [dut.kiss, gs])
         }
         test "cmp" {
             check gs.ident(dut).hostname == "node-3"
@@ -235,13 +237,12 @@ def test_rdp_options_come_from_libcsp_then_the_board_then_the_plan() -> None:
 
 
 def test_the_csp_constructor() -> None:
-    link = InterfaceRef("dut", "kiss", "uart")
-    plain = csp_node(10, link=link)
-    assert plain == CspDeclaration(10, link, None, {}, False)
-    assert plain.describe() == "CSP 10 on link dut.kiss"
+    plain = csp_node(10)
+    assert plain == CspDeclaration(10, {}, False)
+    assert plain.describe() == "CSP 10"
+    assert plain.runs_on == ("packets",)
     tuned = csp_node(
         10,
-        link=link,
         window=8,
         conn_timeout=5.0,
         packet_timeout=0.5,
@@ -260,19 +261,18 @@ def test_the_csp_constructor() -> None:
     }
     assert tuned.broadcast
     for kwargs, message in (
-        ({}, "exactly one of link"),
-        ({"link": InterfaceRef("dut", "can", "can")}, "link is a UART interface"),
-        ({"link": link, "bus": object()}, "exactly one of link"),
+        ({"link": object()}, "link is gone; a node joins a system link instead"),
+        ({"bus": object()}, r"bus is gone; .*link ground: uart\(members: \[dut.kiss, gs\]\)"),
     ):
         with pytest.raises(DslError, match=message):
-            csp_node(10, **kwargs)  # type: ignore[arg-type]
+            csp_node(10, **kwargs)
     with pytest.raises(DslError, match="address must be 0-31"):
-        csp_node(32, link=link)
+        csp_node(32)
 
 
 def test_every_rdp_connection_to_a_board_takes_its_options(tmp_path: Path) -> None:
     """A plugin that opens connections on the CspNode itself (an upload
-    client, say) gets the target board's csp.rdp too."""
+    client, say) gets the target board's csp(rdp: ...) too."""
     from jig.ext.csp.dsl import NodeHandle
     from jig.lang import RunOptions
     from jig.lang.interpreter import Interpreter
@@ -283,8 +283,9 @@ def test_every_rdp_connection_to_a_board_takes_its_options(tmp_path: Path) -> No
     plan = tmp_path / "plan.jig"
     plan.write_text(
         'system {\n board dut: "example-node"\n'
-        " node gs: csp(address: 10, link: dut.kiss)\n"
-        " node tuned: csp(address: 11, link: dut.kiss, ack_timeout: 50 ms)\n}\n",
+        " node gs: csp(address: 10) over kiss\n"
+        " node tuned: csp(address: 11, ack_timeout: 50 ms) over kiss\n"
+        " link ground: uart(members: [dut.kiss, gs, tuned])\n}\n",
         encoding="utf-8",
     )
     interpreter = Interpreter(load(plan), sim, RunOptions())  # type: ignore[arg-type]
@@ -293,7 +294,7 @@ def test_every_rdp_connection_to_a_board_takes_its_options(tmp_path: Path) -> No
     gs, tuned = interpreter.nodes["gs"], interpreter.nodes["tuned"]
     assert isinstance(gs, NodeHandle) and isinstance(tuned, NodeHandle)
     assert gs.node.rdp_for is not None
-    assert gs.node.rdp_for(1).ack_timeout_ms == 100  # example-node's csp.rdp
+    assert gs.node.rdp_for(1).ack_timeout_ms == 100  # example-node's csp(rdp: ...)
     assert gs.node.rdp_for(7).ack_timeout_ms == 250  # no board: libcsp's default
     assert tuned.node.rdp_for(1).ack_timeout_ms == 50  # the declaration wins
     assert tuned.node.rdp_options.ack_timeout_ms == 50

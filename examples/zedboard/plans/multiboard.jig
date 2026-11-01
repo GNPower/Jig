@@ -1,14 +1,14 @@
-# Two ZedBoards on one CAN bus and a host computer on zed-a's KISS link, the
-# system of the example's README. zed-a forwards the host computer's packets
-# for zed-b onto the bus and zed-b's answers back to the host computer.
+# Two ZedBoards on one CAN bus and the host computer on node 1's KISS link, the
+# system of the example's README: node 1 (zed-a) relays between the other two.
 
 import "zed.jig"
 
 system "two ZedBoards and a host computer" {
-    board a: "zed-a"
-    board b: "zed-b"
-    bus can0: can(bitrate: 1 Mbit/s, members: [a.can, b.can])
-    node host: csp(address: 10, link: a.kiss)
+    board a: "zedboard" (node: 1)
+    board b: "zedboard" (node: 2)
+    link can0: can(bitrate: 1 Mbit/s, members: [a.can, b.can])
+    node host: csp(address: 10) over kiss
+    link ground: uart(members: [a.kiss, host])
 }
 
 setup {

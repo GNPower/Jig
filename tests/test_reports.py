@@ -50,7 +50,7 @@ def suite(**fields: object) -> SuiteReport:
         (SimulationError("a step ran too long"), "infrastructure"),
         (RenodeError("Renode exited"), "infrastructure"),
         (ToolchainError("no Renode"), "infrastructure"),
-        (ConfigError("bad board.yaml"), "config"),
+        (ConfigError("bad board file"), "config"),
         (JigError("bad argument"), "config"),
         (RuntimeError("a bug"), "infrastructure"),
     ],
@@ -364,7 +364,8 @@ def test_jig_boards_lists_where_each_board_comes_from(
 
     monkeypatch.setenv("JIG_BOARD_PATH", str(FIXTURES / "extra" / "boards"))
     assert cli.main(["-q", "boards"]) == 0
-    lines = capsys.readouterr().out.splitlines()
+    out = capsys.readouterr().out
+    lines = [line for line in out.splitlines() if not line.startswith(" ")]
     assert [line.split()[0] for line in lines] == [
         "example-extra",
         "example-node",
@@ -374,6 +375,13 @@ def test_jig_boards_lists_where_each_board_comes_from(
     ]
     assert lines[0].endswith("(JIG_BOARD_PATH)")
     assert lines[1].endswith("(jig.toml [paths] boards)")
+    # Under each board: its description, then its options.
+    assert "\n    STM32F4 test fixture\n" in out
+    assert out.rstrip("\n").endswith(
+        "    Zynq-7000 test fixture with one PL register block\n"
+        "    option pl: model (default): the register block as a C# model; "
+        "rtl: the register block as Verilated RTL"
+    )
     monkeypatch.setenv("JIG_BOARD_PATH", str(FIXTURES / "shadow" / "boards"))
     assert cli.main(["-q", "boards"]) == 2
 
@@ -384,7 +392,7 @@ def test_jig_check_loads_plugins_and_checks_codecs(
     assert cli.main(["-q", "check", "example-node", "example-package"]) == 1
     out = capsys.readouterr().out
     assert "example-node: 1 problem(s)" in out and "firmware app:" in out
-    assert "example-package: 1 problem(s)" in out and "stm32.firmware.elf:" in out
+    assert "example-package: 1 problem(s)" in out and "firmware app:" in out
 
 
 def test_python_runs_the_module(tmp_path: Path) -> None:

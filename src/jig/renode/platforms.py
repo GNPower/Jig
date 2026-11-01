@@ -1,9 +1,10 @@
 """Platform descriptions Jig ships, by name.
 
-A board names the SoC platform it builds on (board.yaml ``soc_platform:``) as
+A device family names the platform its devices build on as
 ``<vendor>/<family>``, the path of the ``.repl`` file below ``jig/platforms``
-without its suffix: ``xilinx/zynq7000``. Jig loads that file before the board's
-own platform description, so a board file holds only what its board adds.
+without its suffix: ``xilinx/zynq7000``. The platform description Jig writes
+for a board starts by using that file (``jig.system.generate``), so it holds
+only what the board adds.
 """
 
 from __future__ import annotations

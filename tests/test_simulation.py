@@ -4,6 +4,7 @@ for it, so the monitor commands each step sends can be checked."""
 from __future__ import annotations
 
 import json
+import re
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -72,7 +73,10 @@ class RecordingSession:
         return ""
 
     def python(self, code: str) -> str:
-        return ""
+        self.commands.append(f"(python {code[:40]})")
+        return self.python_reply
+
+    python_reply = ""
 
     def create_machine(self, name: str, *, own_time: bool = False) -> None:
         self.machines.append((name, own_time))
@@ -164,22 +168,25 @@ def test_the_session_opens_at_start_with_the_boards_model_sets(
     assert session.stopped
 
 
-def test_the_overlay_loads_the_soc_platform_first(
+def test_the_machine_loads_the_description_jig_writes(
     project: Path, tmp_path: Path, renode: FakeRenode
 ) -> None:
     (project / "build" / "node.elf").write_bytes(b"\x7fELF")
     sim = built(tmp_path)
     machine = sim.add_board("node", "example-node")
-    assert machine.platform_files() == [
-        platforms.path("xilinx/zynq7000"),
-        project / "boards" / "example-node" / "example-node.repl",
-    ]
+    assert machine.board.workdir == (tmp_path / "run" / "node").as_posix()
     sim.start()
-    overlay = (tmp_path / "run" / "node" / "machine.repl").read_text(encoding="utf-8")
-    first, second = overlay.splitlines()[:2]
-    assert first == f'using "{platforms.path("xilinx/zynq7000").as_posix()}"'
-    assert second.endswith('example-node/example-node.repl"')
-    assert "cpu0:\n    PerformanceInMips: 100" in overlay
+    path = tmp_path / "run" / "node" / "machine.repl"
+    description = path.read_text(encoding="utf-8")
+    assert description == machine.description()
+    lines = [line for line in description.splitlines() if line and not line.startswith("//")]
+    assert (
+        lines[0]
+        == f'using "{platforms.path("xilinx/zynq7000").relative_to(platforms.root()).as_posix()}"'
+    )
+    assert "globalTimer:\n    frequency: 333333333" in description
+    assert description.rstrip().endswith("cpu0:\n    PerformanceInMips: 100")
+    assert f"machine LoadPlatformDescription @{path.as_posix()}" in renode[0].commands
 
 
 def test_a_zynq_board_without_a_hardware_design_boots_over_jtag(
@@ -253,6 +260,23 @@ def test_power_states_drive_the_soc(project: Path, tmp_path: Path, renode: FakeR
     assert kinds == ["off", "on", "off", "on", "off for 0.5 s", "on"]
 
 
+def u5_board(root: Path, firmware: str = '"build/app.elf"', settings: str = "") -> Path:
+    """An STM32U575 board file under ``root/boards/u5``."""
+    directory = root / "boards" / "u5"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "board.jig"
+    path.write_text(
+        'board "u5" {\n'
+        f"    {settings}\n"
+        '    device mcu: stm32(part: "STM32U575ZIT6", vector_table: 0x08004000) {\n'
+        f"        firmware: {firmware}\n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    return path
+
+
 def test_an_stm32_board_boots_its_elf_at_physical_addresses(
     tmp_path: Path, renode: FakeRenode
 ) -> None:
@@ -261,36 +285,28 @@ def test_an_stm32_board_boots_its_elf_at_physical_addresses(
     (root / "build").mkdir()
     elf = root / "build" / "app.elf"
     elf.write_bytes(b"\x7fELF")
-    directory = root / "boards" / "u5"
-    directory.mkdir(parents=True)
-    (directory / "u5.repl").write_text("", encoding="utf-8")
-    (directory / "board.yaml").write_text(
-        "schema: 2\nname: u5\nsoc: stm32\nplatform: u5.repl\n"
-        "stm32: {firmware: {elf: build/app.elf}, cpu: cpu0, vector_table: 0x08004000}\n"
-        "power: {initial: off}\n",
-        encoding="utf-8",
-    )
+    path = u5_board(root, settings='power: "off"')
     sim = built(tmp_path)
-    machine = sim.add_board("u5", boards.load(directory / "board.yaml"), boot="flash")
+    machine = sim.add_board("u5", boards.load(path), boot="flash")
     sim.start()
     session = renode[0]
-    assert "cpu0 IsHalted true" in session.commands  # starts unpowered
+    assert "cpu IsHalted true" in session.commands  # starts unpowered
     session.commands.clear()
     machine.power_on()
-    assert [c for c in session.commands if not c.startswith("(select")] == [
+    assert [c for c in session.commands if not c.startswith("(")] == [
         f"sysbus LoadELF @{elf.as_posix()} false",
-        "cpu0 InitVectorTableOffset 0x8004000",
-        "cpu0 IsHalted false",
+        "cpu InitVectorTableOffset 0x8004000",
+        "cpu IsHalted false",
     ]
     session.commands.clear()
     machine.power_off()
     machine.power_on()
-    assert [c for c in session.commands if not c.startswith("(select")] == [
-        "cpu0 IsHalted true",
+    assert [c for c in session.commands if not c.startswith("(")] == [
+        "cpu IsHalted true",
         "machine Reset",
-        "cpu0 IsHalted false",
+        "cpu IsHalted false",
     ]
-    assert Stm32Driver().overlay(machine.config) == "cpu0:\n    PerformanceInMips: 100\n"
+    assert Stm32Driver().overlay(machine.config) == "cpu:\n    PerformanceInMips: 100\n"
 
 
 def test_an_stm32_firmware_command_runs_once_in_the_root(tmp_path: Path) -> None:
@@ -304,16 +320,9 @@ def test_an_stm32_firmware_command_runs_once_in_the_root(tmp_path: Path) -> None
         "    log.write('x')\n",
         encoding="utf-8",
     )
-    directory = root / "boards" / "u5"
-    directory.mkdir(parents=True)
-    (directory / "u5.repl").write_text("", encoding="utf-8")
     python = Path(sys.executable).as_posix()
-    (directory / "board.yaml").write_text(
-        "schema: 2\nname: u5\nsoc: stm32\nplatform: u5.repl\n"
-        f"stm32: {{firmware: {{command: ['{python}', make_elf.py], output: build/app.elf}}}}\n",
-        encoding="utf-8",
-    )
-    board = boards.load(directory / "board.yaml")
+    path = u5_board(root, firmware=f'command(["{python}", "make_elf.py"], output: "build/app.elf")')
+    board = boards.load(path)
     driver = Stm32Driver()
     from jig.system.socs import MachineConfig
 
@@ -330,20 +339,21 @@ def test_an_stm32_firmware_command_runs_once_in_the_root(tmp_path: Path) -> None
 @pytest.mark.parametrize(
     ("firmware", "message"),
     [
-        ("{elf: a.elf, command: [make], output: a.elf}", "gives one of elf, command or build, not"),
-        ("{command: make, output: a.elf}", "command is a list of arguments"),
-        ("{command: [make]}", "stm32.firmware.output is missing"),
-        ("{elf: a.elf, output: a.elf}", "firmware.output does not go with elf"),
-        ("{}", "gives one of elf, command or build"),
+        ('command("make", output: "a.elf")', "command() takes a list of arguments"),
+        ('command(["make"])', "needs output, the ELF the command leaves"),
+        ('build("build.py", output: "a.elf")', "needs sources and output"),
+        ('{app: "a.elf"}', "an STM32's firmware is an ELF path, build(...) or command(...)"),
+        ("3", "firmware is a path, a map of roles to paths"),
     ],
 )
 def test_stm32_firmware_forms_are_checked(tmp_path: Path, firmware: str, message: str) -> None:
-    (tmp_path / "x.repl").write_text("", encoding="utf-8")
-    (tmp_path / "board.yaml").write_text(
-        f"schema: 2\nname: x\nsoc: stm32\nplatform: x.repl\nstm32: {{firmware: {firmware}}}\n",
-        encoding="utf-8",
-    )
-    (problem,) = Stm32Driver().check(boards.load(tmp_path / "board.yaml"))
+    path = u5_board(tmp_path, firmware=firmware)
+    try:
+        board = boards.load(path)
+    except ConfigError as exc:
+        assert message in str(exc)
+        return
+    (problem,) = Stm32Driver().check(board)
     assert message in problem
 
 
@@ -389,6 +399,7 @@ def test_bus_observers_come_from_the_registry(
 
 
 def test_jig_check_contracts_builds_the_machine_without_booting(
+    project: Path,
     tmp_path: Path,
     renode: FakeRenode,
     monkeypatch: pytest.MonkeyPatch,
@@ -408,13 +419,14 @@ def test_jig_check_contracts_builds_the_machine_without_booting(
     stand_in.verify = verify  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "jig.contracts", stand_in)
     monkeypatch.setenv("JIG_OUTPUT", str(tmp_path / "out"))
+    (project / "build" / "app.elf").write_bytes(b"\x7fELF")
     assert cli.main(["-q", "check", "--contracts", "example-zynq"]) == 1
     (session,) = renode
     assert calls == [(session, "dut", "example-zynq")]
     assert not any(c.startswith("bootrom") for c in session.commands)  # built, not booted
     assert session.stopped
     assert renode.untested == [False]
-    assert "rtc: rtc0: no IRealTimeClock" in capsys.readouterr().out
+    assert "rtc: i2c0.rtc0: no IRealTimeClock" in capsys.readouterr().out
     assert cli.main(["-q", "check", "--contracts", "--allow-untested-renode", "example-zynq"]) == 1
     assert renode.untested == [False, True]
     monkeypatch.setitem(sys.modules, "jig.contracts", None)  # not installed
@@ -569,6 +581,102 @@ def test_consoles_record_from_the_start_of_the_run(
     }
 
 
+def test_cli_returns_when_the_cli_layers_prompt_comes_back(
+    project: Path, monkeypatch: pytest.MonkeyPatch, renode: FakeRenode
+) -> None:
+    """With cli(prompt: ...), board.cli returns when the prompt comes back,
+    at 40 ms here, instead of after 0.3 s of quiet."""
+    (project / "build" / "node.elf").write_bytes(b"\x7fELF")
+    board = project / "boards" / "example-node" / "board.jig"
+    text = board.read_text(encoding="utf-8")
+    assert 'cli(eol: "\\r\\n")' in text
+    board.write_text(
+        text.replace('cli(eol: "\\r\\n")', 'cli(eol: "\\r\\n", prompt: "ready> ")'),
+        encoding="utf-8",
+        newline="\n",
+    )
+    script = [
+        (7_000_000, "a_uart1", b"a: banner\r\nready> "),
+        (40_000_000, "a_uart1", b"status\r\nok\r\nready> "),
+    ]
+    monkeypatch.setattr(
+        system, "open_session", lambda **settings: TalkingSession(script, **settings)
+    )
+    plan = project / "prompt.jig"
+    plan.write_text(
+        "system {\n"
+        '    board a: "example-node" (power: "on")\n'
+        "}\n"
+        'test "cli stops at the prompt" {\n'
+        '    a.console.expect("ready> ", within: 1 s)\n'
+        '    let reply = a.cli("status")\n'
+        '    check reply == "status\\r\\nok\\r\\nready> "\n'
+        "    check now() < 100 ms\n"
+        "}\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    report = run_plan(plan)
+    assert report.ok, report.aborted or [case.detail for case in report.all_cases()]
+
+
+def test_a_console_over_vt100_renders_and_presses_keys(
+    project: Path, monkeypatch: pytest.MonkeyPatch, renode: FakeRenode
+) -> None:
+    """With vt100 in the stack the console's members work on the rendered
+    text, cli waits for the prompt on the cursor's line, and the plan has
+    press and raw; the console link without vt100 has neither."""
+    (project / "build" / "node.elf").write_bytes(b"\x7fELF")
+    board = project / "boards" / "example-node" / "board.jig"
+    text = board.read_text(encoding="utf-8")
+    board.write_text(
+        text.replace('cli(eol: "\\r\\n")', 'cli(eol: "\\r\\n", prompt: "ready> ") over vt100'),
+        encoding="utf-8",
+        newline="\n",
+    )
+    sessions: list[TalkingSession] = []
+    script = [
+        (7_000_000, "a_uart1", b"a: banner\r\n\x1b[1mready>\x1b[0m "),
+        (40_000_000, "a_uart1", b"status\r\n\x1b[32mok\x1b[0m\r\n\x1b[1mready>\x1b[0m "),
+    ]
+
+    def open_session(**settings: Any) -> TalkingSession:
+        session = TalkingSession(script, **settings)
+        sessions.append(session)
+        return session
+
+    monkeypatch.setattr(system, "open_session", open_session)
+    plan = project / "vt100.jig"
+    plan.write_text(
+        "system {\n"
+        '    board a: "example-node" (power: "on")\n'
+        "}\n"
+        'test "rendered" {\n'
+        '    a.console.expect("ready> ", within: 1 s)\n'
+        '    let reply = a.cli("status")\n'
+        '    check reply == "status\\nok\\nready> "\n'
+        "    check now() < 100 ms\n"
+        '    check text(a.console.raw) contains "\\x1b[32mok"\n'
+        '    a.console.press("up")\n'
+        "}\n"
+        'test "an unknown key" {\n'
+        '    a.console.press("Up")\n'
+        "}\n"
+        'test "a link without vt100" {\n'
+        '    a.kiss.press("up")\n'
+        "}\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    report = run_plan(plan)
+    rendered, unknown, plain = report.cases
+    assert rendered.status == "PASS", rendered.detail
+    assert 'a_uart1 Write "1b5b41"' in sessions[0].commands
+    assert unknown.status == "ERROR"
+    assert "press: no key named 'Up'; the keys are up, down, right, left, home" in unknown.detail
+    assert plain.status == "ERROR" and "has no member 'press'" in plain.detail
+
+
 # ---------------------------------------------- files checked before Renode
 
 
@@ -652,15 +760,8 @@ def _qspi_board(project: Path, sim: Simulation) -> Machine:
 
 def _flash_board(project: Path, sim: Simulation) -> Machine:
     (project / "build" / "u5.elf").write_bytes(b"\x7fELF")
-    directory = project / "boards" / "u5"
-    directory.mkdir()
-    (directory / "u5.repl").write_text("", encoding="utf-8")
-    (directory / "board.yaml").write_text(
-        "schema: 2\nname: u5\nroot: ../..\nsoc: stm32\nplatform: u5.repl\n"
-        "stm32: {firmware: {elf: build/u5.elf}, cpu: cpu0}\n",
-        encoding="utf-8",
-    )
-    return sim.add_board("u5", boards.load(directory / "board.yaml"), boot="flash")
+    path = u5_board(project, firmware='"build/u5.elf"', settings='root: "../.."')
+    return sim.add_board("u5", boards.load(path), boot="flash")
 
 
 @pytest.mark.parametrize(
@@ -718,10 +819,133 @@ def test_the_soc_drivers_name_the_stm32_elf_and_the_zynq_xsa(
     with built(tmp_path) as sim:
         sim.add_board("pkg", "example-package")
         sim.add_board("dut", "example-zynq")
-        files = {
-            what: path
+        files = [
+            (machine.name, what, path)
             for machine in sim.machines.values()
             for what, path in machine.required_files(boot=True)
-        }
-        assert files["stm32.firmware.elf"] == (project / "build" / "package.elf").resolve()
-        assert files["zynq7000.xsa"] == (project / "build" / "example.xsa").resolve()
+        ]
+        assert ("pkg", "firmware app", (project / "build" / "package.elf").resolve()) in files
+        assert ("dut", "zynq7000 xsa", (project / "build" / "example.xsa").resolve()) in files
+
+
+# ------------------------------------------- the console's text, power cycles
+
+
+def test_a_console_reads_through_the_view_its_stack_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    port = UartPort(RecordingSession(), "x_uart1", "x.console")  # type: ignore[arg-type]
+    port.feed(b"\x1b[2Jready", [0] * 9)
+    assert isinstance(system.text_view(port, ("cli",)), system.RawText)
+    assert isinstance(system.text_view(port, ("cli", "vt100")), system.TerminalText)
+
+    class Upper:
+        def __init__(self, port: UartPort) -> None:
+            self.port = port
+
+        @property
+        def text(self) -> str:
+            return bytes(self.port.received).decode("latin-1").upper()
+
+        buffer = text
+
+        def clear(self) -> None:
+            pass
+
+    monkeypatch.setitem(system.TEXT_VIEWS, "shout", Upper)
+    view = system.text_view(port, ("cli", "shout"))
+    clock = SimpleNamespace(now_ns=0)
+    console = Console(clock, port, tmp_path / "console.log", view=view)  # type: ignore[arg-type]
+    assert console.text == "\x1b[2JREADY" and console.raw == b"\x1b[2Jready"
+    console.close()
+
+
+# What funbiscuit's embedded-cli sends: the prompt, the echo of a typed
+# command, the line break when it runs and a reply in color, then the prompt.
+EMBEDDED_CLI = b"\x1b[32mjig\x1b[0m> "
+
+
+def test_vt100_renders_what_the_board_sent_and_keeps_the_bytes(tmp_path: Path) -> None:
+    session = RecordingSession()
+    port = UartPort(session, "x_uart1", "x.console")  # type: ignore[arg-type]
+    clock = SimpleNamespace(now_ns=0)
+    view = system.text_view(port, ("cli", "vt100"))
+    console = Console(clock, port, tmp_path / "console.log", view=view)  # type: ignore[arg-type]
+    port.feed(b"boot\r\n" + EMBEDDED_CLI, [0] * 20)
+    assert console.text == "boot\njig> "
+    console.clear()
+    assert console.buffer == ""
+    # "stats" typed, the cursor moved back over "ts", an "a" inserted.
+    port.feed(b"stats\x1b[2D\x1b[@a", [0] * 12)
+    assert console.buffer == "staats"
+    port.feed(b"\r\n\x1b[1mok\x1b[0m\r\n" + EMBEDDED_CLI, [0] * 26)
+    assert console.buffer == "staats\nok\njig> "
+    assert console.search(r"ok\njig> $") is not None
+    assert console.raw.endswith(b"\r\n\x1b[1mok\x1b[0m\r\n" + EMBEDDED_CLI)
+    console.press("up")
+    console.press("ctrl-c")
+    assert session.commands[-2:] == ['x_uart1 Write "1b5b41"', 'x_uart1 Write "03"']
+    with pytest.raises(ValueError, match="no key named 'Up'; the keys are up, down"):
+        console.press("Up")
+    console.close()
+    # The transcript keeps the bytes as the board sent them.
+    assert (tmp_path / "console.log").read_bytes().decode().endswith("\x1b[0m> ")
+
+
+def test_raw_buffer_keeps_a_line_the_terminal_overwrote(tmp_path: Path) -> None:
+    """A log line written between the CR and the LF that end a line of a
+    dump overwrites that line on the screen; the bytes since the clear keep it."""
+    port = UartPort(RecordingSession(), "x_uart1", "x.console")  # type: ignore[arg-type]
+    clock = SimpleNamespace(now_ns=0)
+    view = system.text_view(port, ("cli", "vt100"))
+    console = Console(clock, port, tmp_path / "console.log", view=view)  # type: ignore[arg-type]
+    port.feed(b"boot\r\n" + EMBEDDED_CLI, [0] * 20)
+    assert console.raw_buffer == console.raw  # nothing cleared yet
+    console.clear()
+    assert console.raw_buffer == b""
+    dump = b"dump\r\n00 01 02 03\r[adc] sample ready\r\n\n04 05 06 07\r\n" + EMBEDDED_CLI
+    port.feed(dump, [0] * len(dump))
+    assert console.buffer == "dump\n[adc] sample ready\n\n04 05 06 07\njig> "
+    assert console.raw_buffer == dump
+    assert console.raw == b"boot\r\n" + EMBEDDED_CLI + dump
+    console.close()
+
+
+def test_vt100_finds_the_prompt_where_the_next_command_goes(tmp_path: Path) -> None:
+    port = UartPort(RecordingSession(), "x_uart1", "x.console")  # type: ignore[arg-type]
+    view = system.TerminalText(port)
+    prompt = re.compile(r"jig> ")
+    port.feed(EMBEDDED_CLI, [0] * 15)
+    view.clear()
+    assert not view.prompt_shown(prompt)  # the prompt the command goes out after
+    port.feed(b"version\r\n1.0\r\n", [0] * 14)
+    assert not view.prompt_shown(prompt)
+    # A message while the next command is half typed: embedded-cli clears its
+    # line, prints the message and draws the prompt and the command again.
+    port.feed(b"\r\x1b[Klog: tick\r\n" + EMBEDDED_CLI + b"ver", [0] * 33)
+    assert view.buffer.endswith("log: tick\njig> ver")
+    assert not view.prompt_shown(prompt)
+    port.feed(b"\x1b[3D\x1b[K", [0] * 7)  # the half-typed command erased: the prompt again
+    assert view.prompt_shown(prompt)
+    assert view.prompt_shown(re.compile(r"^jig> $"))
+
+
+def test_peripherals_off_the_backup_supply_restart_when_they_implement_it(
+    project: Path, tmp_path: Path, renode: FakeRenode
+) -> None:
+    (project / "build" / "app.elf").write_bytes(b"\x7fELF")
+    sim = built(tmp_path)
+    machine = sim.add_board("dut", "example-zynq")
+    sim.start()
+    (session,) = renode
+    session.python_reply = "spi0.adc0"  # the machine says which ones implement IPowerCycled
+    session.commands.clear()
+    machine.power_off()
+    machine.power_on()
+    asked = [c for c in session.commands if c.startswith("(python")]
+    assert len(asked) == 1  # once per machine
+    assert [c for c in session.commands if c.endswith("PowerCycle")] == [
+        "spi0.adc0 PowerCycle",
+        "spi0.adc0 PowerCycle",
+    ]
+    assert machine.config.power_cycled == ("spi0.adc0",)

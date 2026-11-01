@@ -92,11 +92,41 @@ def test_keywords_and_declarations() -> None:
     assert _kind_of(source, "let") == "Token.Keyword"
     assert _kind_of(source, "if") == "Token.Keyword"
     assert _kind_of(source, "log") == "Token.Keyword"
-    system = 'system "bench" {\n    board dut: "zed-a"\n    node gs: csp(address: 10)\n}\n'
+    system = (
+        'system "bench" {\n    board dut: "zedboard" (node: 1)\n'
+        "    node gs: csp(address: 10) over kiss\n"
+        "    link ground: uart(members: [dut.kiss, gs])\n}\n"
+    )
     assert _kind_of(system, "system") == "Token.Keyword.Declaration"
     assert _kind_of(system, "board") == "Token.Keyword.Declaration"
     assert _kind_of(system, "dut") == "Token.Name.Variable"
     assert _kind_of(system, "csp") == "Token.Name.Builtin"
+    assert _kind_of(system, "over") == "Token.Operator.Word"
+    assert _kind_of(system, "link") == "Token.Keyword.Declaration"
+    assert _kind_of(system, "ground") == "Token.Name.Variable"
+
+
+def test_board_file_declarations() -> None:
+    source = (
+        'board "zedboard" {\n'
+        "    option node: choice(1, 2)\n"
+        '    device zynq: zynq7000(part: "XC7Z020-CLG484") {\n'
+        "        boot jtag\n"
+        "        protocol csp(address: node)\n"
+        "        interface can0: csp over cfp\n"
+        "        unmodelled dsp: 0x43C00000 .. 0x43C0FFFF\n"
+        "    }\n"
+        '    peripheral flash0: "SPI.Micron_MT25Q" (size: 32 MiB)\n'
+        "    external link can: can(bitrate: 1 Mbit/s, members: [zynq.can0])\n"
+        "}\n"
+    )
+    assert _errors(source) == []
+    for word in ("board", "option", "device", "boot", "protocol", "interface", "unmodelled"):
+        assert _kind_of(source, word) == "Token.Keyword.Declaration", word
+    assert _kind_of(source, "external") == "Token.Keyword.Declaration"
+    assert _kind_of(source, "jtag") == "Token.Name.Variable"
+    assert _kind_of(source, "zynq7000") == "Token.Name.Builtin"
+    assert _kind_of(source, "MiB") == "Token.Keyword.Type"
 
 
 def test_declaration_words_name_variables_elsewhere() -> None:

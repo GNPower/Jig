@@ -1,18 +1,26 @@
 # Write a board plugin
 
-A board plugin is Python code that a board definition brings along. It
-gives plans functions and board members the core language lacks, and
-decoders for the board's own data formats. This guide writes the ZedBoard
+A board plugin is Python code that a board brings along. It gives plans
+functions and board members the core language lacks, decoders for the
+board's own data formats, and protocol layers or device families Jig does
+not ship. This guide writes the ZedBoard
 example's plugin: a decoder for the 36-byte status record, a plan function
 and a board member.
 
 ## How Jig loads a plugin
 
-board.yaml names the plugin, relative to board.yaml: a `.py` file or a
-package directory holding `__init__.py`.
+The board file names the plugin, relative to the board file: a `.py`
+file or a package directory holding `__init__.py`.
 
-```yaml
-plugin: ../zedboard.py
+```jig
+board "zedboard" {
+    plugin: "../zedboard.py"
+    device zynq: zynq7000(part: "XC7Z020-CLG484",
+                          clocks: {cpu_3x2x: 333.333333 MHz,
+                                   cpu_1x: 111.111111 MHz}) {
+        firmware: {app: "firmware/build/zed-node-1.elf"}
+    }
+}
 ```
 
 Jig imports each plugin once per process, under a module name of its own,
@@ -37,7 +45,7 @@ import struct
 
 from jig.plugin import DslError, PluginApi, Record
 
-JIG_PLUGIN_API = 1
+JIG_PLUGIN_API = 2
 
 STATUS = struct.Struct(">IBBBBIIIIIII")
 STATUS_FIELDS = (
@@ -68,26 +76,37 @@ def register(api: PluginApi) -> None:
 
 A codec is a factory. Jig calls it once per stream of records, a harness
 node asking one board or one `bus.hk` call, with the board's name, its
-directories, the housekeeping port and any extra keys from board.yaml. It
-calls the decoder the codec returns on each payload, in order. A format
+directories, the housekeeping port and any extra keys of the board's
+housekeeping map. It calls the decoder the codec returns on each payload,
+in order. A format
 that sends differences between records keeps its state in the decoder;
 the status record needs none, so this codec returns the same function
 every time.
 
-`JIG_PLUGIN_API = 1` states the API version the plugin was written for, so
+`JIG_PLUGIN_API = 2` states the API version the plugin was written for, so
 a later Jig can refuse it with a clear message instead of failing inside a
 plan. A `DslError` from a decoder means the plan called it wrongly: the
 step and its test end with ERROR, and `try` does not catch it. For data
 that is wrong, raise `JigError`, which `jig.plugin` also exports: the
 step fails, the test ends with FAIL, and a plan's `try` can catch it.
 
-Each board definition then names the codec, the port and the request in
-its CSP section. The request is hex digits, a byte or a list of bytes:
+The board file then names the codec, the port and the request in its
+device's CSP layer. The request is bytes, hex digits, a byte or a list of
+bytes:
 
-```yaml
-csp:
-  address: 2
-  housekeeping: {port: 10, request: "01", codec: zed-status}
+```jig
+board "zedboard" {
+    option node: choice(1, 2)
+    device zynq: zynq7000(part: "XC7Z020-CLG484",
+                          clocks: {cpu_3x2x: 333.333333 MHz,
+                                   cpu_1x: 111.111111 MHz}) {
+        firmware: {app: "firmware/build/zed-node-{node}.elf"}
+        protocol csp(address: node, housekeeping: {port: 10, request: x"01",
+                                                   codec: "zed-status"})
+        interface can0: csp over cfp
+    }
+    external link can: can(bitrate: 1 Mbit/s, members: [zynq.can0])
+}
 ```
 
 `host.hk(b)` in a plan now sends `0x01` to port 10 of zed-b and returns
@@ -98,8 +117,9 @@ the bus to anyone.
 
 A function the plugin registers is visible to every plan that uses a board
 with this plugin. Function names are global to a plan, so two boards whose
-plugins define one name can't share a system; zed-a and zed-b name the
-same plugin file, and the same function registered twice counts once.
+plugins define one name can't share a system; two instances of one board,
+such as zed-a and zed-b, load the same plugin file, and the same function
+registered twice counts once.
 Keep functions for helpers that don't belong to one board, like this one,
 which computes how many CAN frames CSP's fragmentation protocol uses for a
 payload:
@@ -154,11 +174,14 @@ call it as `a.uptime()`. With `attribute=True`, a plan reads a member like
 a field instead, `a.uptime`, and Jig calls the function with the handle
 alone; such a function can't wait, so it must not be a coroutine.
 
-A member's name can't be one the handle already has, such as `console`
-or `ping`, or one an extension registered, such as `address`, `packets`,
-`traffic` or `hk`; a function's name can't be a reserved word, and one
-that a built-in function already has (`len`, `crc32`) is an error once a
-plan uses the board.
+A member's name can't be one the handle already has, such as `reset` or
+`ping`, or one an extension registered, such as `address`, `packets`,
+`traffic` or `hk`. A board member can't be called `console` either, since
+plans reach the board's link of that name there, and a board whose
+device, peripheral or link has a member's name fails to load with both
+named. A function's name can't be a reserved word, and one that a
+built-in function already has (`len`, `crc32`) is an error once a plan
+uses the board.
 
 ## 4. Test the plugin without Renode
 
@@ -213,18 +236,26 @@ report ({doc}`../api_reference/testing`).
   - A plan function.
 * - `api.member(handle_type, name, fn, attribute=False)`
   - A member of this plugin's `board` handles, or of `node` or `bus`
-    handles.
+    handles; a system's CAN links are `bus` handles.
 * - `api.hk_codec(name, codec)`
-  - A codec that board.yaml's `csp.housekeeping.codec` can name.
+  - A codec that a board's `protocol csp(housekeeping: {codec: ...})` can
+    name.
 * - `api.node_kind(name, constructor)`
   - A kind of harness node a system declaration can create, next to
-    `csp(...)`.
+    `csp(...)`. The constructor returns a node declaration; when the
+    system starts, Jig calls its handle's `start(system, link)` with the
+    link the node joined: the link's name and kind, the harness's port on
+    it, and the protocol layers under the node.
+* - `api.protocol(name, runs_on=..., provides=..., parse=None)`
+  - A protocol layer for stacks, such as `interface uart2: mine over kiss`:
+    what it runs on and provides (`"byte stream"`, `"packets"`), and a
+    function that checks its arguments.
 * - `api.bus_observer(name, factory)`
   - Code that runs for every CAN bus of a simulation that includes the
     board.
-* - `api.soc_driver(name, factory)`
-  - The driver for `soc: name` on this plugin's boards only, where it
-    takes the place of a driver Jig ships.
+* - `api.device_family(name, factory)`
+  - The driver for `device NAME: name(...)` on this plugin's boards only,
+    where it takes the place of a family Jig ships.
 * - `api.zynq_hooks(images=..., boot_table=..., qspi_image=...)`
   - The board's own firmware images, boot metadata and Quad-SPI flash
     image, for the Zynq-7000 driver.
@@ -238,6 +269,38 @@ report ({doc}`../api_reference/testing`).
 receives (`Record`, `Regex`, `Profile`, `DslError`, `ToolchainError`,
 `HkContext` and others) and `cached()`, for build steps whose output
 should be kept between runs. A board handle gives plugin code its
-`definition`, `config`, `root`, `workdir`, `console` and
-`emit(kind, detail)`, which writes an event into the run's event log.
+`definition` (the board, with `firmware`, `boot`, `storage` and
+`section("csp")` for its one device), `config`, `root`, `workdir`,
+`console` and `emit(kind, detail)`, which writes an event into the run's
+event log.
 {doc}`../api_reference/plugin` lists the whole module.
+
+## The link a node joined
+
+When the system starts, a CSP node's handle keeps the link Jig hands it as
+`node.link`, a `NodeLink`: the system link's `name` and `kind` (`"uart"`
+or `"can"`), the harness's `port` on it, the `layers` under the node, and
+`board_links`, a `BoardLinkRef` for each board's link the system link
+joins. A `BoardLinkRef` gives the board's name in the system (`machine`),
+the link's name in its board file (`name`) and the device interfaces the
+link joins, as the board file writes them (`interfaces`). In the example's
+`multiboard.jig`, `host.link` is `ground`, a `uart` link whose one board
+link is `a.kiss`, with the interfaces `("zynq.uart0",)`.
+
+A node member that only works on one board's serial link checks the link
+before it sends:
+
+```python
+def announce(node, board) -> None:
+    """A packet to port 20 of the board, from a node on its UART link."""
+    link = node.link
+    reaches = any(ref.machine == board.name for ref in link.board_links)
+    if link.kind != "uart" or not reaches:
+        raise DslError(f"announce: {node.name} is not on a UART link of {board.name}")
+    node.send(board, 20, b"\x01")
+```
+
+Registered with `api.member("node", "announce", announce)`,
+`host.announce(a)` sends the packet, and `host.announce(b)` ends the test
+with ERROR and that message. A plugin's own node kind gets the same
+`NodeLink` in its handle's `start(system, link)`.

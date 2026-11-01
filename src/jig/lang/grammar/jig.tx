@@ -1,28 +1,33 @@
 /*
- * Jig plan language (.jig), version 2. textX grammar.
+ * Jig language (.jig), version 3. textX grammar.
  *
  * A plan file holds imports, constants, procedures, at most one system
- * declaration, and setup/test/teardown blocks. Statements are separated by
- * whitespace (newlines are not significant); blocks use braces; '#' starts a
- * comment. Statement keywords, operators and literals are reserved words;
- * every keyword matches whole words only (autokwd).
+ * declaration, and setup/test/teardown blocks. A board file
+ * (boards/<name>/board.jig) holds constants and one board definition.
+ * Statements are separated by whitespace (newlines are not significant);
+ * blocks use braces; '#' starts a comment. Statement keywords, operators and
+ * literals are reserved words; every keyword matches whole words only
+ * (autokwd). The words that open declarations (board, link, node, device,
+ * option and the rest) are matched only where a declaration can start, so
+ * plans can still use them as names.
  *
  *   import "../lib/common.jig"
  *   system {
  *       board dut: "example-board" (boot: "jtag")
- *       node gs: csp(address: 10, link: dut.kiss)
+ *       node gs: csp(address: 10) over kiss
+ *       link ground: uart(members: [dut.kiss, gs])
  *   }
  *   test "ping over KISS" {
  *       check gs.ping(dut) < 100 ms
  *   }
  */
 
-Plan:
-    items*=PlanItem
+File:
+    items*=FileItem
 ;
 
-PlanItem:
-    Import | System | Const | Procedure | Setup | Teardown | Test
+FileItem:
+    Import | System | BoardDefinition | Const | Procedure | Setup | Teardown | Test
 ;
 
 Import:
@@ -34,20 +39,96 @@ System:
 ;
 
 Declaration:
-    BoardDeclaration | BusDeclaration | NodeDeclaration
+    BoardDeclaration | LinkDecl | NodeDeclaration
 ;
 
 BoardDeclaration:
     'board' name=ID ':' definition=Str ('(' args*=Argument[','] ')')?
 ;
 
-BusDeclaration:
-    'bus' name=ID ':' value=Expr
-;
-
 NodeDeclaration:
     'node' name=ID ':' value=Expr
 ;
+
+/* ------------------------------------------------------------ board files */
+
+BoardDefinition:
+    'board' name=Str '{' members*=BoardMember '}'
+;
+
+BoardMember:
+    OptionDecl | DeviceDecl | PeripheralDecl | LinkDecl | SensorDecl | BoardIf | Setting
+;
+
+OptionDecl:
+    'option' name=ID ':' value=Expr
+;
+
+PeripheralDecl:
+    'peripheral' name=ID ':' value=Expr
+;
+
+/* Also a system declaration, where 'external' is an error. */
+LinkDecl:
+    external?='external' 'link' name=ID ':' value=Expr
+;
+
+SensorDecl:
+    'sensor' name=ID ':' pin=Expr ('=' initial=Expr)?
+;
+
+Setting:
+    name=ID ':' value=Expr
+;
+
+DeviceDecl:
+    'device' name=ID ':' value=Expr ('{' members*=DeviceMember '}')?
+;
+
+DeviceMember:
+    BootDecl | ProtocolDecl | InterfaceDecl | IpDecl | UnmodelledDecl | DeviceIf
+    | Assign | Setting
+;
+
+BootDecl:
+    'boot' mode=ID (':' settings=Expr)?
+;
+
+ProtocolDecl:
+    'protocol' (name=ID ':')? value=Expr
+;
+
+InterfaceDecl:
+    'interface' name=ID ':' stack=Expr
+;
+
+IpDecl:
+    'ip' name=ID ':' value=Expr
+;
+
+UnmodelledDecl:
+    'unmodelled' name=ID ':' range=Range
+;
+
+BoardIf:
+    'if' condition=Expr '{' members*=BoardMember '}'
+    elifs*=BoardElif ('else' '{' otherwise*=BoardMember '}')?
+;
+
+BoardElif:
+    'elif' condition=Expr '{' members*=BoardMember '}'
+;
+
+DeviceIf:
+    'if' condition=Expr '{' members*=DeviceMember '}'
+    elifs*=DeviceElif ('else' '{' otherwise*=DeviceMember '}')?
+;
+
+DeviceElif:
+    'elif' condition=Expr '{' members*=DeviceMember '}'
+;
+
+/* ------------------------------------------------------------------ plans */
 
 Const:
     'const' name=ID '=' value=Expr
@@ -188,7 +269,12 @@ Continue:
 /* ------------------------------------------------------------ expressions */
 
 Expr:
-    Or
+    Stack
+;
+
+/* Protocol layers, top first: csp(address: 10) over kiss. */
+Stack:
+    layers=Or ('over' layers=Or)*
 ;
 
 Or:
@@ -301,8 +387,13 @@ Map:
     '{' entries*=MapEntry[','] ','? '}'
 ;
 
+/* Integer keys name chip selects and bus addresses: {0: flash0}, {0x40: pmon}. */
 MapEntry:
-    (key=ID | quoted=Str) ':' value=Expr
+    (key=ID | quoted=Str | number=Integer) ':' value=Expr
+;
+
+Integer:
+    value=/(0x[0-9A-Fa-f_]+|0b[01_]+|\d[\d_]*)(?![\w.])/
 ;
 
 Paren:
@@ -314,7 +405,7 @@ Name:
 ;
 
 Keyword:
-    /(let|if|elif|else|repeat|times|every|for|in|while|parallel|race|task|timeline|at|try|catch|check|wait|until|within|log|record|fail|return|break|continue|and|or|not|true|false|none|as)(?![A-Za-z0-9_])/
+    /(let|if|elif|else|repeat|times|every|for|in|while|parallel|race|task|timeline|at|try|catch|check|wait|until|within|log|record|fail|return|break|continue|and|or|not|true|false|none|as|over)(?![A-Za-z0-9_])/
 ;
 
 Comment:

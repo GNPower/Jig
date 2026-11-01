@@ -1,5 +1,6 @@
 //
-// Contract for a real-time clock a test sets and reads (board.yaml rtc).
+// Contract for a real-time clock a test sets and reads (a board file's rtc
+// setting).
 //
 namespace Antmicro.Renode.Peripherals.Jig.Contracts
 {

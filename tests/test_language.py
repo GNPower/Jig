@@ -61,7 +61,7 @@ def test_a_file_beside_the_plan_wins_over_the_library_path(tmp_path: Path) -> No
     [
         ('import "absent.jig"', r"import 'absent.jig': no such file \(looked at .*absent.jig, "),
         ('import "no-such-board:x.jig"', "no board named 'no-such-board'"),
-        ('import "example-node:../../example-zynq/board.yaml"', "reaches outside"),
+        ('import "example-node:../../example-zynq/board.jig"', "reaches outside"),
         ('import "example-node:../plugin.py"', "reaches outside"),
         ('import "std:absent.jig"', r"import 'std:absent.jig': no such file"),
         ('import "notes.txt"', "imports name .jig files, not notes.txt"),
@@ -106,8 +106,61 @@ def test_every_unit_parses_in_a_plan(tmp_path: Path, unit: str) -> None:
 
 
 def test_keywords_come_from_the_grammar() -> None:
-    assert {"check", "wait", "timeline", "none"} <= parser.KEYWORDS
-    assert "board" not in parser.KEYWORDS
+    assert {"check", "wait", "timeline", "none", "over"} <= parser.KEYWORDS
+    # Declaration words are matched only where a declaration starts.
+    assert not {"board", "link", "device", "option", "peripheral", "sensor"} & parser.KEYWORDS
+
+
+# ---------------------------------------------------------- grammar version 3
+
+
+def test_over_is_reserved_but_argument_names_are_not(tmp_path: Path) -> None:
+    report = run_source(
+        tmp_path,
+        'test "t" {\n'
+        "    let shape = ramp(16, 256, over: 10 s)\n"
+        "    check round(shape.at(5)) == 136\n"
+        '    let table = {0: "cs0", 0x40: "pmon", 0b11: 3, name: 4}\n'
+        '    check table[0x40] == "pmon" and table[3] == 3 and table.name == 4\n'
+        '    let device = "a name that board files reserve"\n'
+        "    check len(device) > 0\n"
+        "}\n",
+    )
+    assert statuses(report) == {"t": "PASS"}, details(report)
+    with pytest.raises(PlanError, match="syntax error"):
+        run_source(tmp_path, 'test "t" { let x = over }\n', name="reserved")
+
+
+def test_a_plan_holds_no_board_definition(tmp_path: Path) -> None:
+    with pytest.raises(PlanError, match=r"plan\.jig:2:1: a plan file holds no board definition"):
+        run_source(tmp_path, '# a board in a plan\nboard "x" { description: "no" }\n')
+
+
+def test_a_bus_declaration_points_at_links(tmp_path: Path) -> None:
+    source = 'system {\n    board a: "example-zynq"\n    bus can0: can(members: [a.can])\n}\n'
+    with pytest.raises(PlanError, match=r"3:\d+: syntax error: .*link NAME: can\(\.\.\.\)"):
+        run_source(tmp_path, source)
+
+
+def test_board_files_hold_consts_and_one_board(tmp_path: Path) -> None:
+    good = tmp_path / "good.jig"
+    good.write_text('const X = 1\nboard "b" { description: "{X}" }\n', encoding="utf-8")
+    program = parser.load_board_file(good)
+    assert [type(item).__name__ for item in program.main.model.items] == [
+        "Const",
+        "BoardDefinition",
+    ]
+    for text, message in (
+        ('board "b" { }\ntest "t" { }\n', "not a test"),
+        ('import "x.jig"\nboard "b" { }\n', "not an import"),
+        ('board "b" { }\nboard "c" { }\n', "holds one board definition"),
+        ('board "b" { }\nconst X = 1\n', "const lines come before the board definition"),
+        ("const X = 1\n", "holds one board definition"),
+    ):
+        bad = tmp_path / "bad.jig"
+        bad.write_text(text, encoding="utf-8")
+        with pytest.raises(PlanError, match=message):
+            parser.load_board_file(bad)
 
 
 # -------------------------------------------------------------------- stdlib

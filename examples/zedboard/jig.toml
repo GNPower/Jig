@@ -1,12 +1,12 @@
 # The ZedBoard example as a Jig project. `jig run` finds this file by searching
-# up from the plan. `jig check`, `jig boards` and `jig boot` search up from the
-# working directory, so run those inside examples/zedboard.
+# up from the plan. `jig check`, `jig platform`, `jig boards` and `jig boot`
+# search up from the working directory, so run those inside examples/zedboard.
 
 [project]
 name = "zedboard"
 
 [paths]
-boards = ["boards"]   # zed-a and zed-b
+boards = ["boards"]   # zedboard, with option node
 lib = ["lib"]         # procedures the plans share: import "zed.jig"
 
 [renode]

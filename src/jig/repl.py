@@ -40,9 +40,14 @@ def _value(text: str) -> int | float | str:
 
 def properties(path: Path) -> dict[str, dict[str, int | float | str]]:
     """``{peripheral: {property: value}}`` for one file (``using`` is not followed)."""
+    return properties_of(path.read_text(encoding="utf-8"))
+
+
+def properties_of(text: str) -> dict[str, dict[str, int | float | str]]:
+    """``{peripheral: {property: value}}`` for a description's text."""
     result: dict[str, dict[str, int | float | str]] = {}
     current: str | None = None
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    for raw in text.splitlines():
         line = _strip_comment(raw).rstrip()
         if not line.strip():
             continue

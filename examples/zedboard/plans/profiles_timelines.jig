@@ -1,15 +1,15 @@
 # Work on a schedule: zed-b's status polled every second and recorded, pings
 # whose size follows a ramp, and pings across a one-second outage of the host
-# computer's link. Tutorial 3 in the documentation builds this plan step by
-# step.
+# computer's link. Tutorial 3 in the documentation builds this plan.
 
 import "zed.jig"
 
 system "two ZedBoards on CAN" {
-    board a: "zed-a"
-    board b: "zed-b"
-    bus can0: can(bitrate: 1 Mbit/s, members: [a.can, b.can])
-    node host: csp(address: 10, link: a.kiss)
+    board a: "zedboard" (node: 1)
+    board b: "zedboard" (node: 2)
+    link can0: can(bitrate: 1 Mbit/s, members: [a.can, b.can])
+    node host: csp(address: 10) over kiss
+    link ground: uart(members: [a.kiss, host])
 }
 
 setup {

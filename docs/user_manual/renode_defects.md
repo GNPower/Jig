@@ -7,7 +7,8 @@ bits never receives the frames addressed to it, a low-power timer never
 matches a compare value of 0, a real-time clock forgets the date at every
 reset. For each defect it
 has met, Jig ships a model of its own or a hook on Renode's, and the
-platforms Jig ships (`soc_platform`) use them.
+platforms Jig ships (`xilinx/zynq7000`, `st/stm32u575` and `st/stm32u595`,
+which a device's family and part pick) use them.
 
 Every defect in the first table has a test under `tests/models` that drives
 Renode's own model and asserts the wrong behaviour. The test passes while

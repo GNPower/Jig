@@ -1,23 +1,16 @@
-"""The ``csp`` section of a board.yaml, and the housekeeping codec contract::
+"""The arguments of a device's ``csp`` protocol layer, and the housekeeping
+codec contract::
 
-    csp:
-      address: 5                 # the board's CSP address, 0-31
-      housekeeping:              # what node.hk(board) and bus.hk(board) use
-        port: 10                 # the board's housekeeping port, 0-63
-        request: "01"            # the request payload: hex digits, a byte or a list of bytes
-        codec: example-status    # a codec a plugin registered (api.hk_codec)
-        layout: status.yaml      # any other key goes to the codec as an option
-      rdp:                       # RDP options for connections to this board
-        window_size: 4
-        conn_timeout_ms: 10000
-        packet_timeout_ms: 1000
-        delayed_acks: true
-        ack_timeout_ms: 250
-        ack_delay_count: 2
+    protocol csp(address: 5,                     # the device's CSP address, 0-31
+                 housekeeping: {port: 10,        # what node.hk(board) and bus.hk(board) ask
+                                request: "01",   # hex digits, a byte or a list of bytes
+                                codec: "example-status",  # a codec a plugin registered
+                                layout: "status.yaml"},   # any other key: a codec option
+                 rdp: {window_size: 4, conn_timeout: 10 s, packet_timeout: 1 s,
+                       delayed_acks: true, ack_timeout: 250 ms, ack_delay_count: 2})
 
 RDP options for a connection come from libcsp 1.6's defaults, then the
-target board's ``csp.rdp``, then what the plan's ``csp(...)`` declaration
-sets.
+target device's ``rdp``, then what the plan's ``csp(...)`` declaration sets.
 
 A housekeeping codec is a function a plugin registers under a name
 (``api.hk_codec(name, codec)``). Jig calls ``codec(context)`` once per
@@ -36,8 +29,6 @@ from typing import Any
 
 from jig.errors import ConfigError
 from jig.ext.csp import protocol as csp
-from jig.ext.csp.rdp import RdpOptions
-from jig.system.boards import SectionContext
 
 SECTION = "csp"
 
@@ -54,7 +45,7 @@ class Housekeeping:
 class CspSettings:
     address: int | None = None
     housekeeping: Housekeeping | None = None
-    rdp: Mapping[str, Any] = field(default_factory=dict)  # RdpOptions fields the board sets
+    rdp: Mapping[str, Any] = field(default_factory=dict)  # RdpOptions fields the device sets
 
     def problems(self) -> list[str]:
         """What ``jig check`` reports: a codec no loaded plugin registered."""
@@ -65,7 +56,7 @@ class CspSettings:
         try:
             registry.default().codec(self.housekeeping.codec)
         except ConfigError as exc:
-            return [f"csp.housekeeping: {exc}"]
+            return [f"csp housekeeping: {exc}"]
         return []
 
 
@@ -74,10 +65,10 @@ class HkContext:
     """What a housekeeping codec learns about the stream it decodes."""
 
     board: str  # the board definition's name
-    directory: Path  # the directory holding its board.yaml
+    directory: Path  # the directory holding its board file
     root: Path  # the board's root
     port: int  # the housekeeping port
-    options: Mapping[str, Any]  # the other keys of csp.housekeeping
+    options: Mapping[str, Any]  # the other keys of the housekeeping map
 
 
 HkDecoder = Callable[[bytes], Mapping[str, Any]]
@@ -85,6 +76,8 @@ HkCodec = Callable[[HkContext], HkDecoder]
 
 
 def _request(value: Any, where: str) -> bytes:
+    if isinstance(value, bytes):
+        return value
     if isinstance(value, bool):
         raise ConfigError(f"{where}: expected hex digits, a byte or a list of bytes")
     if isinstance(value, int):
@@ -109,11 +102,11 @@ def _request(value: Any, where: str) -> bytes:
 def _housekeeping(value: Any, where: str) -> Housekeeping:
     if isinstance(value, str):
         raise ConfigError(
-            f"{where}: a table {{port, request, codec}} since board.yaml schema 2, "
-            "not a file name (a codec option can name the file)"
+            f"{where}: a map {{port, request, codec}}, not a file name "
+            "(a codec option can name the file)"
         )
     if not isinstance(value, dict):
-        raise ConfigError(f"{where}: expected a table {{port, request, codec}}")
+        raise ConfigError(f"{where}: expected a map {{port, request, codec}}")
     for key in ("port", "codec"):
         if key not in value:
             raise ConfigError(f"{where}: missing '{key}'")
@@ -128,39 +121,53 @@ def _housekeeping(value: Any, where: str) -> Housekeeping:
     return Housekeeping(port, request, codec, options)
 
 
-def rdp_overrides(value: Any, where: str) -> dict[str, Any]:
-    """RdpOptions fields from a table, checked."""
+_RDP_TIMES = {
+    "conn_timeout": "conn_timeout_ms",
+    "packet_timeout": "packet_timeout_ms",
+    "ack_timeout": "ack_timeout_ms",
+}
+_RDP_COUNTS = ("window_size", "ack_delay_count")
+
+
+def rdp_layer_options(value: Any, where: str) -> dict[str, Any]:
+    """RdpOptions fields from ``csp(rdp: {...})``: times with units
+    (``ack_timeout: 100 ms``), counts, and ``delayed_acks``."""
     if not isinstance(value, dict):
-        raise ConfigError(f"{where}: expected a table of RDP options")
-    known = RdpOptions.field_names()
+        raise ConfigError(f"{where}: rdp is a map of RDP options")
+    known = [*_RDP_COUNTS, *_RDP_TIMES, "delayed_acks"]
     result: dict[str, Any] = {}
     for key, item in value.items():
-        if key not in known:
-            raise ConfigError(f"{where}: unknown option {key} (known: {', '.join(known)})")
         if key == "delayed_acks":
             if not isinstance(item, bool):
-                raise ConfigError(f"{where}.delayed_acks must be true or false")
-        elif not isinstance(item, int) or isinstance(item, bool) or item <= 0:
-            raise ConfigError(f"{where}.{key} must be a positive integer")
-        result[str(key)] = item
+                raise ConfigError(f"{where}: rdp delayed_acks is true or false")
+            result[key] = item
+        elif key in _RDP_TIMES:
+            if not isinstance(item, (int, float)) or isinstance(item, bool) or item <= 0:
+                raise ConfigError(f"{where}: rdp {key} is a positive time, such as 100 ms")
+            result[_RDP_TIMES[key]] = round(item * 1000)
+        elif key in _RDP_COUNTS:
+            if not isinstance(item, int) or isinstance(item, bool) or item <= 0:
+                raise ConfigError(f"{where}: rdp {key} is a positive whole number")
+            result[key] = item
+        else:
+            raise ConfigError(f"{where}: rdp has no option {key} (known: {', '.join(known)})")
     return result
 
 
-def parse(value: Any, context: SectionContext) -> CspSettings:
-    """The board.yaml section parser the CSP extension registers."""
-    where = context.where
-    if not isinstance(value, dict):
-        raise ConfigError(f"{where}: expected a mapping")
-    unknown = ", ".join(map(str, sorted(set(value) - {"address", "housekeeping", "rdp"})))
+def parse_layer(arguments: Mapping[str, Any], where: str) -> CspSettings:
+    """The ``csp`` protocol layer's arguments: ``address``, ``housekeeping``
+    and ``rdp`` (``protocol csp(address: 5, rdp: {ack_timeout: 100 ms})``)."""
+    unknown = ", ".join(map(str, sorted(set(arguments) - {"address", "housekeeping", "rdp"})))
     if unknown:
-        raise ConfigError(f"{where}: unknown key {unknown} (known: address, housekeeping, rdp)")
-    address = value.get("address")
+        raise ConfigError(f"{where}: csp takes address, housekeeping and rdp, not {unknown}")
+    address = arguments.get("address")
     if address is not None and (
         not isinstance(address, int) or isinstance(address, bool) or not 0 <= address <= 31
     ):
-        raise ConfigError(f"{where}.address must be an integer 0-31")
+        raise ConfigError(f"{where}: csp address must be an integer 0-31, not {address!r}")
     housekeeping = None
-    if value.get("housekeeping") is not None:
-        housekeeping = _housekeeping(value["housekeeping"], f"{where}.housekeeping")
-    rdp = rdp_overrides(value["rdp"], f"{where}.rdp") if value.get("rdp") is not None else {}
-    return CspSettings(address, housekeeping, rdp)
+    if arguments.get("housekeeping") is not None:
+        housekeeping = _housekeeping(arguments["housekeeping"], f"{where}: csp housekeeping")
+    rdp = arguments.get("rdp")
+    options = rdp_layer_options(rdp, f"{where}: csp") if rdp is not None else {}
+    return CspSettings(address, housekeeping, options)

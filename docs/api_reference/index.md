@@ -1,13 +1,13 @@
 # API Reference
 
-Most users never write Python for Jig: plans are `.jig` files, and boards
-are YAML. Python enters when a board needs a plugin, a test double or a
-driver for a new SoC family. This section documents the modules those
+Most users never write Python for Jig: plans and board files are `.jig`
+files. Python enters when a board needs a plugin, a test double or a
+driver for a new device family. This section documents the modules those
 authors meet; the plan language is in the {doc}`../user_manual/index`.
 
 **Public surface.** Board plugins import only `jig.plugin`, whose API
 follows semantic versioning from 0.1.0 with its own version number,
-currently 1. `jig.testing` is public for tests. Every other module is
+currently 2. `jig.testing` is public for tests. Every other module is
 internal: it can change in any release, and the pages here document it
 only where a plugin or driver author needs to read its types.
 
@@ -41,12 +41,12 @@ contracts
 : The exception hierarchy under `JigError`.
 
 {doc}`socs`
-: The SoC driver protocol and the per-machine configuration a driver
-  receives.
+: The device family driver protocol and the per-machine configuration a
+  driver receives.
 
 {doc}`renode`
 : The Renode session a driver talks to, model sets and Renode discovery.
 
 {doc}`contracts`
 : `jig.contracts`: checking that board peripherals implement the C#
-  contracts their board.yaml keys need.
+  contracts their board file settings need.

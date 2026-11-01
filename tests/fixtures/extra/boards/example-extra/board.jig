@@ -1,0 +1,10 @@
+# A board in a second board root (tests/fixtures/extra/boards), which the
+# tests put on JIG_BOARD_PATH.
+board "example-extra" {
+    description: "STM32 test fixture found through JIG_BOARD_PATH"
+    root: "../../.."
+
+    device mcu: stm32(part: "STM32F407VG") {
+        firmware: "build/extra.elf"
+    }
+}

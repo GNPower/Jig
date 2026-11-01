@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Graham Power
-"""The ZedBoard example's board plugin and board definitions, without Renode.
+"""The ZedBoard example's board plugin and board file, without Renode.
 
 Run with ``python -m pytest examples/zedboard/tests`` from the repository root.
 """
@@ -15,9 +15,9 @@ from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
-import yaml
 
 from jig.plugin import DslError
+from jig.system import boards
 
 EXAMPLE = Path(__file__).resolve().parents[1]
 PLUGIN = EXAMPLE / "boards" / "zedboard.py"
@@ -67,7 +67,7 @@ def test_a_status_record_decodes_by_field_name() -> None:
 
 
 def test_the_codec_gives_every_stream_the_same_decoder() -> None:
-    context = SimpleNamespace(board="zed-b", port=10, options={})
+    context = SimpleNamespace(board="zedboard", port=10, options={})
     assert plugin.status_codec(context) is plugin.decode_status
 
 
@@ -158,26 +158,28 @@ def test_register_adds_the_codec_the_function_and_the_board_member() -> None:
     assert api.functions == {"cfp_frames": plugin.cfp_frames}
     # Rerunning a board's boot flow after a power cycle is Jig's board.boot().
     assert api.members == {("board", "uptime"): plugin.uptime}
-    assert plugin.JIG_PLUGIN_API == 1
+    assert plugin.JIG_PLUGIN_API == 2
 
 
-# ------------------------------------------------------- board definitions
+# ----------------------------------------------------------- the board file
 
 
-@pytest.mark.parametrize(("board", "address"), [("zed-a", 1), ("zed-b", 2)])
-def test_each_board_names_the_plugin_its_codec_and_its_firmware(board: str, address: int) -> None:
-    path = EXAMPLE / "boards" / board / "board.yaml"
-    definition = yaml.safe_load(path.read_text(encoding="utf-8"))
-    assert definition["schema"] == 2
-    assert definition["name"] == board
-    assert (path.parent / definition["plugin"]).resolve() == PLUGIN
-    assert (path.parent / definition["platform"]).resolve() == EXAMPLE / "zedboard.repl"
-    assert (path.parent / definition["root"]).resolve() == EXAMPLE
-    assert definition["firmware"]["app"] == f"firmware/build/zed-node-{address}.elf"
-    assert definition["csp"] == {
-        "address": address,
-        "housekeeping": {"port": 10, "request": "01", "codec": "zed-status"},
-    }
-    console = definition["interfaces"]["console"]
-    assert (console["peripheral"], console["eol"]) == ("uart1", "cr")
-    assert ("kiss" in definition["interfaces"]) == (board == "zed-a")
+@pytest.mark.parametrize("node", [1, 2])
+def test_each_node_names_the_plugin_its_codec_and_its_firmware(node: int) -> None:
+    path = EXAMPLE / "boards" / "zedboard" / "board.jig"
+    board = boards.load(path, {"node": node})
+    assert board.name == "zedboard" and board.option_values == {"node": node}
+    assert board.plugin == PLUGIN
+    assert board.root == EXAMPLE
+    assert board.firmware["app"] == EXAMPLE / "firmware" / "build" / f"zed-node-{node}.elf"
+    csp = board.section("csp")
+    assert (csp.address, csp.housekeeping.port, csp.housekeeping.request) == (node, 10, b"\x01")
+    assert csp.housekeeping.codec == "zed-status"
+    console = board.interface("console")
+    assert (console.peripheral, console.eol, console.settings["baud"]) == ("uart1", "\r", 115200)
+    assert board.interface("can").settings == {"bitrate": 1_000_000}
+    kiss = board.interface("kiss")
+    assert kiss.peripheral == "uart0"
+    # Only node 1 runs CSP over KISS on UART0.
+    assert kiss.stack == (("csp", "kiss") if node == 1 else ())
+    assert board.soc_settings["ddr"] == 512 * 1024 * 1024
