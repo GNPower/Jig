@@ -88,18 +88,40 @@ file.
 ## jig check and jig boards
 
 ```text
-jig check [BOARD ...] [--contracts]
+jig check [BOARD ...] [--option NAME=VALUE] [--contracts]
           [--renode PATH] [--allow-untested-renode]
 jig boards
 ```
 
-`jig check` validates board definitions, all of them by default: keys,
-files, SoC settings, the codecs their plugins register, and clocks
-against a hardware design. With `--contracts` it also builds each board's
-machine in Renode, without booting it, and checks that each peripheral a
-board.yaml key names implements the C# contract that key needs
-({doc}`../how_to/write_a_model`). It exits 1 when a board has a problem.
-`jig boards` lists every board Jig can see and the root it came from.
+`jig check` validates board files, all of them by default, without
+Renode: each board file loads, its device's family accepts the device's
+arguments, its firmware and XSA files exist, its register maps parse,
+every protocol stack fits the interface below it ("csp needs packets and
+uart0 gives a byte stream: put kiss between them"), its housekeeping
+codecs are registered, and Jig can write its platform description. No
+device, peripheral or link may have the name of a board member. Each
+board is checked with its options' defaults; `--option NAME=VALUE` sets
+an option for every board that has it, and repeats. With `--contracts` it
+also builds each board's machine in Renode, without booting it, and
+checks that each peripheral a board file setting names implements the C#
+contract that setting needs ({doc}`../how_to/write_a_model`). It exits 1
+when a board has a problem. `jig boards` lists every board Jig can see
+and the root it came from, and under each its description and its options
+with their values and defaults.
+
+## jig platform
+
+```text
+jig platform BOARD [--option NAME=VALUE] [-o FILE]
+```
+
+Prints the Renode platform description Jig writes for the board's device
+from its board file ({doc}`board_files`), with the board's option
+defaults or the values `--option` gives, or writes it to `FILE` as UTF-8.
+`workdir` reads `<workdir>`, since no run builds the machine. A board
+author reads it to see what Renode loads; a Renode script can load the
+written file to run the board without Jig, as the ZedBoard example's
+`renode/two-boards.resc` does.
 
 ## jig doctor
 
@@ -241,7 +263,7 @@ take neither option.
   - A test failed, a teardown failed, or repeated runs differed.
 * - 2
   - A usage or configuration error: a bad option, a plan that does not
-    parse, a board definition or `jig.toml` that is wrong, or a file a
+    parse, a board file or `jig.toml` that is wrong, or a file a
     board needs that is missing, which Jig finds before Renode starts.
 * - 3
   - An infrastructure failure: Renode missing or failing, a model that

@@ -1,11 +1,11 @@
-# One ZedBoard: zed-a's boot banner, its console commands, its uptime against
-# simulated time, and a host computer on its KISS link asking for a ping, the
-# status record and the uptime in seconds. Tutorial 1 in the documentation
-# builds this plan step by step.
+# One ZedBoard as node 1 (zed-a): its boot banner, its console commands, its
+# uptime against simulated time, and a host computer on its KISS link asking
+# for a ping, the status record and the uptime in seconds (tutorial 1).
 
 system "one ZedBoard" {
-    board a: "zed-a"
-    node host: csp(address: 10, link: a.kiss)
+    board a: "zedboard" (node: 1)
+    node host: csp(address: 10) over kiss
+    link ground: uart(members: [a.kiss, host])
 }
 
 procedure uptime_ms(board) {

@@ -18,7 +18,7 @@ from jig.plugin import (
 
 from . import helpers, status
 
-JIG_PLUGIN_API = 1
+JIG_PLUGIN_API = 2
 
 
 def status_codec(context: HkContext) -> HkDecoder:

@@ -1,0 +1,16 @@
+# A public smoke test of Jig's stm32 family: Renode's stock STM32F4 platform
+# runs firmware/hello.c (built from source by firmware/build.py), which greets
+# on USART2 and sends one frame on CAN1. The firmware runs from the reset
+# clock, so the device sets no core clock.
+board "stm32f4-hello" {
+    description: "STM32F4 smoke test (USART2 greeting, one bxCAN frame)"
+    root: "."
+
+    device mcu: stm32(part: "STM32F407VG", mips: 16) {
+        firmware: build("firmware/build.py", sources: "firmware", output: "firmware.elf")
+        interface usart2: cli
+    }
+
+    external link console: uart(baud: 115200, members: [mcu.usart2])
+    external link can: can(bitrate: 1 Mbit/s, members: [mcu.can1])
+}

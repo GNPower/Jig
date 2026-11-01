@@ -1,5 +1,5 @@
-"""Jig's stm32 SoC driver on Renode's stock STM32F4 platform with public
-firmware built from source (tests/fixtures/firmware/stm32f4-hello): the driver
+"""Jig's stm32 family on Renode's stock STM32F4 platform (part STM32F407VG) with
+public firmware built from source (tests/fixtures/firmware/stm32f4-hello): the driver
 builds and caches the ELF, loads it, points the core at the vector table and
 lets it run; the greeting arrives on the USART2 console and the frame on the
 CAN bus. Needs Renode and an ARM GCC (ARM_NONE_EABI_GCC or arm-none-eabi-gcc
@@ -32,7 +32,7 @@ def arm_gcc() -> str:
 
 
 def test_the_firmware_greets_and_sends_a_frame(arm_gcc: str, tmp_path: Path) -> None:
-    board = boards.load(FIXTURE / "board.yaml")
+    board = boards.load(FIXTURE / "board.jig")
     frames: list[CanFrame] = []
     with Simulation(name="stm32f4-hello", workdir=tmp_path / "run") as simulation:
         dut = simulation.add_board("dut", board)
@@ -50,7 +50,7 @@ def test_the_firmware_greets_and_sends_a_frame(arm_gcc: str, tmp_path: Path) -> 
 
 
 def test_the_build_is_cached_by_its_sources(arm_gcc: str) -> None:
-    board = boards.load(FIXTURE / "board.yaml")
+    board = boards.load(FIXTURE / "board.jig")
     driver = Stm32Driver()
     config = MachineConfig(
         name="dut", board=board, boot="flash", performance_mips=16, workdir=Path("unused")

@@ -7,7 +7,8 @@
 // answers one line: "missing" when no peripheral has that name, else "found",
 // the peripheral's class (without the Antmicro.Renode.Peripherals. prefix) and
 // each contract interface it implements. IStorage and IAnalogInputs carry the
-// value board.yaml must agree with: "IStorage=<Size>", "IAnalogInputs=<ChannelCount>".
+// value the board file must agree with: "IStorage=<Size>",
+// "IAnalogInputs=<ChannelCount>".
 // A name resolves as the monitor resolves it: as written, then with "sysbus."
 // in front.
 //

@@ -1,6 +1,6 @@
 # Renode sessions and discovery
 
-An SoC driver talks to Renode through a session: one Renode process per
+A device family's driver talks to Renode through a session: one Renode process per
 plan run, reached through the localhost bridge
 ({doc}`../user_manual/bridge`). Discovery finds the Renode a session runs,
 and model sets carry the C# models each session compiles.

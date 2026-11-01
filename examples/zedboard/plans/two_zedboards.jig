@@ -1,16 +1,16 @@
-# Two ZedBoards on one CAN bus, with the host computer on zed-a's KISS link:
+# Two ZedBoards on one CAN bus, with the host computer on node 1's KISS link:
 # console pings between the boards, the host computer's packets crossing the
 # bus, a ping that needs 26 CAN frames each way, the status records and a ping
-# that nobody answers. Tutorial 2 in the documentation builds this plan step
-# by step.
+# that nobody answers. Tutorial 2 in the documentation builds this plan.
 
 import "zed.jig"
 
 system "two ZedBoards on CAN" {
-    board a: "zed-a"
-    board b: "zed-b"
-    bus can0: can(bitrate: 1 Mbit/s, members: [a.can, b.can])
-    node host: csp(address: 10, link: a.kiss)
+    board a: "zedboard" (node: 1)
+    board b: "zedboard" (node: 2)
+    link can0: can(bitrate: 1 Mbit/s, members: [a.can, b.can])
+    node host: csp(address: 10) over kiss
+    link ground: uart(members: [a.kiss, host])
 }
 
 setup {

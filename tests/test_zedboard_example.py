@@ -37,8 +37,8 @@ def test_a_console_read_late_holds_the_boot_banner(example: Path, tmp_path: Path
     """Both boards print their banner 7 ms after they start; the code reads
     zed-b's console only once zed-a's prompt has come, 30 ms in."""
     with Simulation(name="banners", workdir=tmp_path / "run", step_wall_limit=120.0) as sim:
-        a = sim.add_board("a", "zed-a")
-        b = sim.add_board("b", "zed-b")
+        a = sim.add_board("a", "zedboard", options={"node": 1})
+        b = sim.add_board("b", "zedboard", options={"node": 2})
         sim.add_can_bus("can0", members=[("a", "can"), ("b", "can")])
         sim.start()
         sim.run(a.console.expect(r"zed-a: CSP address 1 ", timeout=2.0))
@@ -53,7 +53,7 @@ def test_a_console_read_late_holds_the_boot_banner(example: Path, tmp_path: Path
 
 def test_boot_brings_a_jtag_board_back_after_a_power_cycle(example: Path, tmp_path: Path) -> None:
     with Simulation(name="reboot", workdir=tmp_path / "run", step_wall_limit=120.0) as sim:
-        b = sim.add_board("b", "zed-b")
+        b = sim.add_board("b", "zedboard", options={"node": 2})
         sim.add_can_bus("can0", members=[("b", "can")])
         sim.start()
         sim.run(b.console.expect("zed> ", timeout=2.0))

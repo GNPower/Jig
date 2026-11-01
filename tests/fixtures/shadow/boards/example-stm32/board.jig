@@ -1,0 +1,10 @@
+# A second definition of example-stm32 in another board root: with this root
+# on the search path, the name is defined twice, which is an error.
+board "example-stm32" {
+    description: "duplicate of the example-stm32 fixture"
+    root: "../../.."
+
+    device mcu: stm32(part: "STM32F407VG") {
+        firmware: "build/duplicate.elf"
+    }
+}

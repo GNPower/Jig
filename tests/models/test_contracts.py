@@ -19,7 +19,7 @@ from .bench import Bench
 class StorageEntry:
     name: str
     peripheral: str
-    size: int
+    size: int | None
 
 
 @dataclass(frozen=True)
@@ -27,16 +27,16 @@ class SensorEntry:
     name: str
     adc: str
     channel: int
+    source: str | None = None
 
 
 @dataclass(frozen=True)
 class BoardEntries:
-    """The board.yaml keys verify reads, as jig.system.boards.Board holds them."""
+    """The settings verify reads, as jig.system.boards.Board holds them."""
 
     storage: tuple[StorageEntry, ...] = ()
     sensors: tuple[SensorEntry, ...] = ()
     rtc: str | None = None
-    power_restart: tuple[str, ...] = ()
 
 
 class FakeSession:
@@ -65,7 +65,6 @@ GOOD_BOARD = BoardEntries(
     storage=(StorageEntry("flash0", "spi0.flash0", 0x100000),),
     sensors=(SensorEntry("rail", "adc", 3),),
     rtc="rtc",
-    power_restart=("spi0.flash0", "adc", "rtc"),
 )
 
 
@@ -100,35 +99,36 @@ def test_verify_accepts_peripherals_that_meet_their_contracts() -> None:
     ]
 
 
-def test_verify_names_every_key_that_is_not_met() -> None:
+def test_verify_names_every_setting_that_is_not_met() -> None:
     board = BoardEntries(
         storage=(
             StorageEntry("flash0", "spi0.flash0", 0x200000),
-            StorageEntry("log", "uart0", 0x1000),
+            StorageEntry("log", "uart0", None),
         ),
-        sensors=(SensorEntry("rail", "adc", 4), SensorEntry("temp", "nowhere", 0)),
+        sensors=(
+            SensorEntry("rail", "adc", 4),
+            SensorEntry("temp", "nowhere", 0),
+            SensorEntry("core", "adc1", 16, source="sysbus.adc1.core_input"),  # not checked
+        ),
         rtc="uart0",
-        power_restart=("adc", "uart0"),
     )
     session = FakeSession({"spi0.flash0": FLASH, "adc": ADC, "uart0": UART})
     problems = contracts.verify(session, "dut", board)
     assert [(p.key, p.peripheral) for p in problems] == [
-        ("storage.flash0.size", "spi0.flash0"),
-        ("storage.log.peripheral", "uart0"),
-        ("sensors.rail.channel", "adc"),
-        ("sensors.temp.adc", "nowhere"),
+        ("storage flash0", "spi0.flash0"),
+        ("storage log", "uart0"),
+        ("sensor rail", "adc"),
+        ("sensor temp", "nowhere"),
         ("rtc", "uart0"),
-        ("power.restart[1]", "uart0"),
     ]
     messages = [p.message for p in problems]
-    assert messages[0] == "board.yaml gives 2097152 bytes, the model has 1048576"
+    assert messages[0] == "its size property gives 2097152 bytes, the model has 1048576"
     assert messages[1] == (
         "Jig.Cadence.CadenceUART does not implement IStorage (the harness calls AttachImage)"
     )
     assert messages[2] == "channel 4 is outside 0-3"
     assert messages[3] == "no such peripheral in machine dut"
     assert "SetDateTime and GetDateTime" in messages[4]
-    assert "IPowerCycled" in messages[5]
 
 
 def test_a_problem_reads_as_key_peripheral_message() -> None:
@@ -179,10 +179,10 @@ def test_the_query_reports_each_models_contracts(board: Bench) -> None:
 @pytest.mark.renode
 def test_verify_on_a_built_machine(board: Bench) -> None:
     assert contracts.verify(board.session, board.name, GOOD_BOARD) == []
-    broken = BoardEntries(rtc="adc", power_restart=("uart0",))
+    broken = BoardEntries(rtc="adc", storage=(StorageEntry("log", "uart0", None),))
     assert [p.key for p in contracts.verify(board.session, board.name, broken)] == [
+        "storage log",
         "rtc",
-        "power.restart[0]",
     ]
 
 

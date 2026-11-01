@@ -1,12 +1,13 @@
 """What a plan can reach: built-in functions and handles on the system.
 
 Plans never touch the simulation directly. A system declaration creates
-handles (``BoardHandle`` for a board, ``BusHandle`` for a CAN bus, and one
-handle per node from the node kind that declared it) and each handle exposes a
-fixed set of members, listed in its ``dsl_members``, plus the members
-extensions and board plugins register (``jig.plugin``). Anything else is not
-reachable from a plan. Methods that wait are coroutines on the simulation's
-scheduler, every duration is in seconds of simulated time.
+handles (``BoardHandle`` for a board, ``BusHandle`` for a CAN link,
+``ConsoleHandle`` for a UART link, and one handle per node from the node kind
+that declared it) and each handle exposes a fixed set of members, listed in
+its ``dsl_members``, plus the members extensions and board plugins register
+(``jig.plugin``). Anything else is not reachable from a plan. Methods that
+wait are coroutines on the simulation's scheduler, every duration is in
+seconds of simulated time.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ import math
 import random
 import re
 import zlib
-from collections.abc import Callable, Coroutine, Mapping
+from collections.abc import Callable, Coroutine, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -30,6 +31,7 @@ from jig.runtime.scheduler import seconds_to_ns
 if TYPE_CHECKING:
     from jig.runtime.scheduler import Scheduler
     from jig.system.boards import Board
+    from jig.system.model import Link
     from jig.system.socs import MachineConfig
     from jig.system.system import Console, Machine, Simulation
     from jig.transports.can import CanBusPort
@@ -126,31 +128,63 @@ class Match:
 
 
 @dataclass(frozen=True)
-class InterfaceRef:
-    """A board interface named in a system declaration (``dut.kiss``)."""
+class BoardLinkRef:
+    """A board's link named in a system declaration (``dut.kiss``): the
+    machine, the link's name on the board, its kind (``uart``, ``can``, ...),
+    whether it leaves the board, and the device interfaces a UART or CAN
+    link joins, as the board file names them (``("zynq.uart0",)``)."""
 
     machine: str
     name: str
     kind: str
+    external: bool = True
+    interfaces: tuple[str, ...] = ()
 
-    dsl_members = frozenset({"machine", "name", "kind"})
+    dsl_members = frozenset({"machine", "name", "kind", "external"})
 
     def __repr__(self) -> str:
         return f"{self.machine}.{self.name}"
 
+    @property
+    def ref(self) -> BoardLinkRef:
+        return self
+
+    def dsl_attribute(self, name: str) -> Any:
+        """A plan reaches a board's link only through the system link on it."""
+        if not self.external:
+            raise DslError(
+                f"{self!r} is a link inside board {self.machine}: a plan reaches it through "
+                "a system link on it, and those probes come in a later release"
+            )
+        raise DslError(
+            f"{self!r} joins no system link, so the harness is not on it: declare one, "
+            f"such as link {self.name}0: {self.kind}(members: [{self!r}])"
+        )
+
+
+def _link_ref(machine: str, link: Link) -> BoardLinkRef:
+    """The reference to ``link``, a link of the board ``machine`` runs."""
+    ends = tuple(f"{end.device}.{end.name}" for end in link.members)
+    return BoardLinkRef(machine, link.name, link.kind, link.external, ends)
+
 
 class ConsoleHandle:
-    """A board's CLI on a UART."""
+    """The harness's end of a UART: what the board sent as text, and lines
+    sent to it."""
 
     dsl_members = frozenset(
         {"label", "text", "buffer", "send", "write", "cli", "expect", "seen", "clear", "drain"}
     )
 
     def __init__(self, console: Console) -> None:
-        self._console = console
+        self._source: Callable[[], Console] = lambda: console
 
     def __repr__(self) -> str:
         return f"<console {self._console.label}>"
+
+    @property
+    def _console(self) -> Console:
+        return self._source()
 
     @property
     def label(self) -> str:
@@ -192,6 +226,52 @@ class ConsoleHandle:
 
     async def drain(self, settle: float = 0.5) -> str:
         return await self._console.drain(as_seconds(settle, "settle"))
+
+
+class UartLinkHandle(ConsoleHandle):
+    """A board's external UART link (``a.console``, ``a.kiss``): the console
+    members on the harness's end of it, which records what the board sends
+    from the start of the run."""
+
+    def __init__(self, machine: Machine, link: str) -> None:
+        self._machine = machine
+        self._link = link
+        self._source = lambda: machine.console_on(link)
+        self.ref = _link_ref(machine.name, machine.board.link(link))
+
+    def __repr__(self) -> str:
+        return f"<link {self._machine.name}.{self._link}>"
+
+
+class TerminalLinkHandle(UartLinkHandle):
+    """An external UART link whose interface's stack has ``vt100``: the
+    console members work on the text as a terminal shows it, and three more
+    reach past the rendering, ``press``, ``raw`` and ``raw_buffer``."""
+
+    dsl_members = UartLinkHandle.dsl_members | {"press", "raw", "raw_buffer"}
+
+    def press(self, key: Any) -> None:
+        """Send the bytes a terminal sends for a named key: ``up``, ``down``,
+        ``right``, ``left``, ``home``, ``end``, ``insert``, ``delete``,
+        ``page_up``, ``page_down``, ``tab``, ``enter``, ``backspace``,
+        ``escape``, ``ctrl-a`` to ``ctrl-z``."""
+        if not isinstance(key, str):
+            raise DslError(f'press takes the name of a key, such as "up", not {type_name(key)}')
+        try:
+            self._console.press(key)
+        except ValueError as exc:
+            raise DslError(f"press: {exc}") from None
+
+    @property
+    def raw(self) -> bytes:
+        """The bytes the board sent since the run started, as it sent them."""
+        return bytes(self._console.raw)
+
+    @property
+    def raw_buffer(self) -> bytes:
+        """The bytes the board sent since the last ``clear()`` (or ``cli``),
+        as it sent them."""
+        return bytes(self._console.raw_buffer)
 
 
 class BackgroundHandle:
@@ -259,12 +339,82 @@ def periodic(
     return body
 
 
+class DeviceHandle:
+    """A device of a board (``a.zynq``): its name, its family and its
+    machine's monitor."""
+
+    dsl_members = frozenset({"name", "family", "monitor"})
+
+    def __init__(self, board: BoardHandle, name: str, family: str) -> None:
+        self.board = board
+        self._name = name
+        self._family = family
+
+    def __repr__(self) -> str:
+        return f"<device {self.board.name}.{self._name} ({self._family})>"
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def family(self) -> str:
+        return self._family
+
+    def monitor(self, command: str) -> str:
+        """A Renode monitor command in this device's machine."""
+        return self.board.monitor(command)
+
+
+class PeripheralHandle:
+    """A peripheral of a board (``a.flash0``): its name and model."""
+
+    dsl_members = frozenset({"name", "model"})
+
+    def __init__(self, board: BoardHandle, name: str, model: str) -> None:
+        self.board = board
+        self._name = name
+        self._model = model
+
+    def __repr__(self) -> str:
+        return f"<peripheral {self.board.name}.{self._name} ({self._model})>"
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def model(self) -> str:
+        return self._model
+
+
+def name_collisions(board: Board, members: Iterable[str]) -> list[str]:
+    """The board's devices, peripherals and links whose names a board
+    handle already uses for a member (``reset``, a plugin's ``uptime``)."""
+    taken = set(BoardHandle.dsl_members) | set(members)
+    found = []
+    for kind, names in (
+        ("device", [device.name for device in board.devices]),
+        ("peripheral", [part.name for part in board.peripherals]),
+        ("link", [link.name for link in board.links]),
+    ):
+        for name in names:
+            if name in taken:
+                found.append(
+                    f"board {board.name}: {kind} {name} has the name of the board member "
+                    f"{name}; rename the {kind}"
+                )
+    return found
+
+
 class BoardHandle:
     """One emulated board.
 
-    Besides the plan members in ``dsl_members``, plugins read ``definition``
-    (the board.yaml), ``config`` (the machine's settings), ``root``,
-    ``workdir`` and ``console``, and call ``emit(kind, detail)``."""
+    Besides the plan members in ``dsl_members``, a plan reaches the board's
+    devices, peripherals and links by name (``a.zynq``, ``a.flash0``,
+    ``a.console``). Plugins read ``definition`` (the board), ``config`` (the
+    machine's settings), ``root``, ``workdir`` and ``console``, and call
+    ``emit(kind, detail)``."""
 
     dsl_kind = "board"
     dsl_members = frozenset(
@@ -273,8 +423,6 @@ class BoardHandle:
             "board",
             "boot_mode",
             "boot",
-            "console",
-            "interface",
             "cli",
             "send",
             "expect",
@@ -296,7 +444,7 @@ class BoardHandle:
 
     def __init__(self, machine: Machine) -> None:
         self._machine = machine
-        self._console: ConsoleHandle | None = None
+        self._links: dict[str, Any] = {}  # link name -> its handle, once made
 
     def __repr__(self) -> str:
         return f"<board {self._machine.name} ({self._machine.board.name})>"
@@ -309,7 +457,7 @@ class BoardHandle:
 
     @property
     def definition(self) -> Board:
-        """The board definition (board.yaml) this board was built from."""
+        """The board this machine was built from, for its option values."""
         return self._machine.board
 
     @property
@@ -319,7 +467,7 @@ class BoardHandle:
 
     @property
     def root(self) -> Path:
-        """The board's root directory (board.yaml ``root``)."""
+        """The board's root directory (its ``root`` setting)."""
         return self._machine.board.root
 
     @property
@@ -355,36 +503,83 @@ class BoardHandle:
 
     @property
     def console(self) -> ConsoleHandle:
-        if self._console is None:
-            self._console = ConsoleHandle(self._machine.console)
-        return self._console
+        """The board's external link named ``console``."""
+        found: ConsoleHandle = self.link("console")
+        return found
 
     @property
     def sensors(self) -> list[str]:
         return [sensor.name for sensor in self._machine.board.sensors]
 
-    def interface(self, name: str) -> InterfaceRef:
-        spec = self._machine.board.interface(name)
-        return InterfaceRef(self._machine.name, spec.name, spec.kind)
+    def link(self, name: str) -> Any:
+        """The board's link ``name``: an external UART link's console members
+        (``UartLinkHandle``); for a CAN link, the handle of the system link
+        it joined; else a ``BoardLinkRef`` (a CAN link that joins no system
+        link, a link inside the board)."""
+        found = self._links.get(name)
+        if found is not None:
+            return found
+        spec = self._machine.board.link(name)
+        if spec.external and spec.kind == "uart":
+            terminal = "vt100" in self._machine.board.interface(spec.name).stack
+            kind = TerminalLinkHandle if terminal else UartLinkHandle
+            found = kind(self._machine, spec.name)
+        else:
+            found = _link_ref(self._machine.name, spec)
+        self._links[name] = found
+        return found
+
+    def attach_link(self, name: str, handle: Any) -> None:
+        """What the board's link ``name`` stands for in plans from now on: the
+        system link that joined it."""
+        self._links[name] = handle
 
     def dsl_attribute(self, name: str) -> Any:
-        """``dut.kiss``: an interface of the board by name."""
-        try:
-            return self.interface(name)
-        except ConfigError:
-            return None
+        """``dut.kiss``, ``dut.zynq``, ``dut.flash0``: a link, a device or a
+        peripheral of the board by name."""
+        board = self._machine.board
+        if any(link.name == name for link in board.links):
+            return self.link(name)
+        for device in board.devices:
+            if device.name == name:
+                return DeviceHandle(self, device.name, device.family)
+        for part in board.peripherals:
+            if part.name == name:
+                return PeripheralHandle(self, part.name, part.model)
+        return None
+
+    @property
+    def cli_console(self) -> ConsoleHandle:
+        """The console of the board's one interface whose stack has ``cli``,
+        which ``cli``, ``send`` and ``expect`` use."""
+        definition = self._machine.board
+        links = definition.cli_links()
+        if len(links) == 1:
+            found: ConsoleHandle = self.link(links[0])
+            return found
+        if not links:
+            raise DslError(
+                f"board {self.name} ({definition.name}) runs cli on none of its external UART "
+                "links: give the console's interface a cli layer, such as interface uart1: cli"
+            )
+        listed = ", ".join(links)
+        raise DslError(
+            f"board {self.name} runs cli on {listed}: name the link, such as "
+            f"{self.name}.{links[0]}.cli(...)"
+        )
 
     async def cli(self, command: str, settle: float = 0.3) -> str:
-        return await self.console.cli(command, settle)
+        return await self.cli_console.cli(command, settle)
 
     def send(self, line: str) -> None:
-        self.console.send(line)
+        self.cli_console.send(line)
 
     async def expect(self, pattern: Any, within: float = 10.0) -> Match:
-        return await self.console.expect(pattern, within)
+        return await self.cli_console.expect(pattern, within)
 
-    def set_sensor(self, name: str, volts: float) -> int:
-        """Drive a sensor input (volts at the converter pin), returns the code it reads."""
+    def set_sensor(self, name: str, volts: float) -> int | None:
+        """Drive a sensor input (volts at the converter pin), returns the code it
+        reads (none for a converter that reports no codes to the harness)."""
         if not isinstance(volts, (int, float)):
             raise DslError(f"set_sensor: volts must be a number, not {type_name(volts)}")
         return self._machine.set_sensor(name, float(volts))
@@ -491,13 +686,27 @@ class BoardHandle:
 
 @dataclass
 class BusSpec:
+    """A system CAN link: its bit rate and the boards' links it joins."""
+
     bitrate: float
-    members: list[InterfaceRef] = field(default_factory=list)
+    members: list[BoardLinkRef] = field(default_factory=list)
+
+
+@dataclass
+class LinkSpec:
+    """``uart(...)``, ``can(...)`` and the other link kinds in a system: the
+    settings it states (``baud``, ``bitrate``) and its members, boards'
+    links and nodes."""
+
+    kind: str
+    settings: dict[str, Any] = field(default_factory=dict)
+    members: list[Any] = field(default_factory=list)
 
 
 class BusHandle:
-    """A CAN bus the plan declared. Plugins reach what each bus observer made
-    of its traffic through ``observer(name)``."""
+    """A CAN link the plan declared (``link can0: can(...)``), and every
+    board's CAN link it joins. Plugins reach what each bus observer made of
+    its traffic through ``observer(name)``."""
 
     dsl_kind = "bus"
     dsl_members = frozenset({"name", "bitrate", "frames", "acknowledge"})
@@ -576,26 +785,53 @@ class SystemContext:
         if emit is not None:
             emit(source, kind, detail)
 
-    def uart(self, interface: InterfaceRef) -> UartPort:
-        """The harness's end of a board's UART (once the simulation started)."""
-        return self.simulation.machines[interface.machine].port(interface.name)
+    def uart(self, link: BoardLinkRef) -> UartPort:
+        """The harness's end of a board's UART link (once the simulation started)."""
+        return self.simulation.machines[link.machine].port(link.name)
 
     def can_bus(self, name: str) -> CanBusPort:
-        """The harness's adapter on a declared CAN bus (once the simulation started)."""
+        """The harness's adapter on a system CAN link (once the simulation started)."""
         if name not in self.simulation.can_buses:
-            raise ConfigError(f"no CAN bus {name!r}")
+            raise ConfigError(f"no CAN link {name!r}")
         return self.simulation.can_buses[name]
 
     def start_background(self, name: str, body: BackgroundBody) -> BackgroundHandle:
         return start_background(self.simulation, name, body)
 
 
+@dataclass(frozen=True)
+class NodeLink:
+    """What Jig hands a node when the system starts: the system link it
+    joined (its name and kind, ``uart`` or ``can``), the harness's port on
+    that link (a ``UartPort`` or a ``CanBusPort``), the layers of its stack
+    below the node, top first (``kiss`` in ``csp(...) over kiss``), and the
+    boards' links the system link joins, in the order its members name them
+    (``BoardLinkRef``: the machine, the link's name on the board and the
+    device interfaces it joins)."""
+
+    name: str
+    kind: str
+    port: Any
+    layers: tuple[Any, ...] = ()
+    board_links: tuple[BoardLinkRef, ...] = ()
+
+
 class NodeDeclaration:
-    """What a node kind's constructor returns (``node gs: csp(...)``).
+    """What a node kind's constructor returns (``node gs: csp(address: 10)``).
+
+    ``runs_on`` names what the node needs from what is below it: ``packets``
+    for a node that needs ``kiss`` or ``cfp`` under it, ``CAN frames`` for one
+    that sits on a CAN link directly, ``byte stream`` for one that sits on a
+    UART. A node declares the layers under it with ``over``
+    (``csp(address: 10) over kiss``) and joins a system link as one of its
+    members.
 
     ``describe`` gives the system line of the run report. ``create`` makes the
-    handle the plan sees under the node's name, before the simulation start,
-    the handle's ``start(system)`` runs once it has started."""
+    handle the plan sees under the node's name, before the simulation starts;
+    the handle's ``start(system, link)`` runs once it has started, with the
+    ``NodeLink`` it joined."""
+
+    runs_on: tuple[str, ...] = ("packets",)
 
     def describe(self) -> str:
         raise NotImplementedError
@@ -734,14 +970,29 @@ def builtin_functions(plan_dir: Path, simulation_now: Callable[[], float]) -> di
     }
 
 
+LINK_KINDS = ("uart", "can", "spi", "qspi", "i2c", "gpio")
+_LINK_SETTINGS = {"uart": ("baud", "frame"), "can": ("bitrate",)}
+
+
 def system_constructors() -> dict[str, Any]:
-    """Functions only a system declaration uses, besides the node kinds."""
+    """Functions only a system declaration uses, besides the node kinds and
+    protocol layers: one per link kind (``link can0: can(members: [...])``)."""
 
-    def can(bitrate: float = 1_000_000, members: Any = None) -> BusSpec:
-        refs = list(members or [])
-        for ref in refs:
-            if not isinstance(ref, InterfaceRef) or ref.kind != "can":
-                raise DslError(f"can(): members are CAN interfaces of boards, not {show(ref)}")
-        return BusSpec(float(bitrate), refs)
+    def constructor(kind: str) -> Callable[..., LinkSpec]:
+        allowed = (*_LINK_SETTINGS.get(kind, ()), "members")
 
-    return {"can": can}
+        def make(**arguments: Any) -> LinkSpec:
+            unknown = sorted(set(arguments) - set(allowed))
+            if unknown:
+                raise DslError(
+                    f"{kind}(): unknown argument {', '.join(unknown)} (takes {', '.join(allowed)})"
+                )
+            members = arguments.pop("members", None)
+            if not isinstance(members, list) or not members:
+                raise DslError(f"{kind}(): members is a list of boards' links and nodes")
+            return LinkSpec(kind, dict(arguments), list(members))
+
+        make.__name__ = kind
+        return make
+
+    return {kind: constructor(kind) for kind in LINK_KINDS}

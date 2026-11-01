@@ -27,6 +27,8 @@ from jig.transports.uart import parse_collected
 def test_stm32_board_definition() -> None:
     board = boards.find("example-stm32")
     assert board.soc == "stm32"
+    assert board.soc_settings["part"] == "STM32F407VG"
+    assert board.soc_settings["clock"] == 168_000_000
     assert board.section("csp").address == 1
     assert board.interface("console").peripheral == "usart2"
     assert board.interface("can").kind == "can"
@@ -54,13 +56,12 @@ def test_stm32_driver_names_a_missing_compiler(monkeypatch: pytest.MonkeyPatch) 
     assert any("ARM_NONE_EABI_GCC" in problem for problem in problems)
 
 
-def test_stm32_board_without_a_firmware_build_is_refused(tmp_path: Path) -> None:
-    (tmp_path / "x.repl").write_text("")
-    path = tmp_path / "board.yaml"
-    path.write_text("schema: 2\nname: x\nsoc: stm32\nplatform: x.repl\nstm32: {}\n")
+def test_stm32_board_without_firmware_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "board.jig"
+    path.write_text('board "x" {\n    device mcu: stm32(part: "STM32F407VG") { }\n}\n')
     board = boards.load(path)
     (problem,) = Stm32Driver().check(board)
-    assert "stm32.firmware must give elf, command and output" in problem
+    assert "an STM32's firmware is an ELF path, build(...) or command(...)" in problem
 
 
 def test_uart_stamps_never_go_back() -> None:

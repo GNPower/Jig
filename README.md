@@ -14,19 +14,20 @@ Full documentation: <https://jig.readthedocs.io>
 
 ## Overview
 
-Jig runs test plans, written as `.jig` files, against a users firmware
+Jig runs test plans, written as `.jig` files, against a user's firmware
 on [Renode](https://renode.io). A plan declares the boards it needs, the
-buse interfaces between them and the communication protocols the harness uses, then
-drives the system over those interfaces in simulated time:
+links between them and the protocol nodes the harness runs, then drives
+the system over those links in simulated time:
 
 ```jig
 import "zed.jig"
 
 system "two ZedBoards and a host computer" {
-    board a: "zed-a"
-    board b: "zed-b"
-    bus can0: can(bitrate: 1 Mbit/s, members: [a.can, b.can])
-    node host: csp(address: 10, link: a.kiss)
+    board a: "zedboard" (node: 1)
+    board b: "zedboard" (node: 2)
+    link can0: can(bitrate: 1 Mbit/s, members: [a.can, b.can])
+    node host: csp(address: 10) over kiss
+    link ground: uart(members: [a.kiss, host])
 }
 
 setup {
@@ -42,21 +43,26 @@ test "the host computer reaches zed-b through zed-a" {
 }
 ```
 
-This is the start of `examples/zedboard/plans/multiboard.jig`. The setup
-waits, on both boards at once, for the boot banner and the first prompt
-(`booted` comes from the example's plan library, `lib/zed.jig`). The test
-then pings zed-b from the host computer through zed-a using the lightweight
-network protocol [LibCSP](https://github.com/libcsp/libcsp).
+This is the start of `examples/zedboard/plans/multiboard.jig`. Both
+boards are ZedBoards; the `node` option picks the firmware build each one
+runs, zed-a or zed-b. The host computer is a CSP node the harness runs on
+zed-a's KISS serial link. The setup waits, on both boards at once, for the
+boot banner and the first prompt (`booted` comes from the example's plan
+library, `lib/zed.jig`). The test then pings zed-b from the host computer
+through zed-a using the lightweight network protocol
+[LibCSP](https://github.com/libcsp/libcsp).
 
 Every check's result is printed in a report with the simulated time it ran
 at. Each run gets a fingerprint, a SHA-256 digest of everything it decided
 and measured in simulated time, so `jig run --repeat 3` proves a plan gives
 the same result three times, on any host.
 
-Boards are data: a `board.yaml` names the platform (in this case the
-[ZedBoard][zedboard], running a Zynq-7020 SoC), the Renode platform
-description, the firmware and the interfaces plans use. Users must bring
-their own C# models and Python plugins for any peripherals not directly
+Boards are described in the same language: a `board.jig` file declares
+the board's device (in this case the [ZedBoard][zedboard]'s Zynq-7020
+SoC), the chips wired to it, the links that leave the board, the protocol
+stacks its firmware runs, and the firmware. Jig writes the Renode platform
+description from it, and `jig platform` prints it. Users must bring their
+own C# models and Python plugins for any peripherals not directly
 supported by Jig.
 
 [zedboard]: https://www.avnet.com/americas/products/avnet-boards/avnet-board-families/zedboard/
@@ -98,14 +104,15 @@ documentation build plans like this one step by step.
 - **A plan language for firmware tests**: consoles, network requests, checks,
   waits, loops, parallel tasks, timelines and recorded values, all in
   simulated time.
-- **Several boards in one emulation**, on bus interfaces the harness carries
-  and watches, with repeatable timing between them.
+- **Several boards in one emulation**, on CAN and serial links the harness
+  carries and watches, with repeatable timing between them.
 - **Zynq-7000 and STM32 drivers**: JTAG-style and Quad-SPI boots through
   Jig's Zynq-7000 models, and ELF boots on Renode's STM32 platforms.
 - **CSP in libcsp 1.6's wire format**: KISS and CAN links, RDP
   connections, and a bus observer that reassembles every packet.
 - **Board plugins** through `jig.plugin`, a versioned API for plan
-  functions, board members, decoders and device drivers.
+  functions, board members, decoders, protocol layers and device
+  families.
 - **C# models compiled by Renode at start-up**, with interfaces that board
   chip models implement so plans can drive them.
 - **Reports for people and CI**: an HTML page with plots, JUnit XML, a JSON

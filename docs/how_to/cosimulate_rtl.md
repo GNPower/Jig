@@ -25,30 +25,33 @@ reach the RTL as the processing system would issue them.
 
 ## 1. Describe the RTL choice
 
-Board options are choices a plan makes per board instance. Give the board
-an option whose `rtl` choice loads a platform fragment and names the RTL
-build:
+Board options are choices a system makes per board instance. Give the
+board an option, and under `if`, an `ip` line for each choice: the C#
+model, or `cosim(...)` with the RTL build.
 
-```yaml
-options:
-  pl:
-    default: model
-    model:
-      description: the register block as a C# model
-    rtl:
-      description: the register block as Verilated RTL
-      platform: rtl.repl
-      cosim:
-        peripheral: block
-        build: cosim/build.sh
-        sources: cosim/sources.f
-        inputs: [hdl]
-        library: libexample_block.so
-        context: "trace={workdir}/block.vcd"
+```jig
+board "my-zynq-board" {
+    option pl: choice({model: "the register block as a C# model",
+                       rtl: "the register block as Verilated RTL"})
+
+    device zynq: zynq7000(part: "XC7Z020-CLG484", xsa: "build/design.xsa",
+                          ps_clk: 33.333333 MHz, ps_version: 3) {
+        firmware: {app: "build/app.elf"}
+        if pl == "model" {
+            ip block: "Example.ExampleBlock" (on: 0x43C00000 .. 0x43C00FFF)
+        } else {
+            ip block: cosim(on: 0x43C00000 .. 0x43C00FFF, build: "cosim/build.sh",
+                            sources: "cosim/sources.f", inputs: ["hdl"],
+                            library: "libexample_block.so",
+                            context: "trace={workdir}/block.vcd",
+                            frequency: 20 MHz, limitBuffer: 1000)
+        }
+    }
+}
 ```
 
-`rtl.repl`, beside board.yaml, puts a co-simulated peripheral where the
-model would sit and sets the clock the RTL is built for:
+With `pl` set to `rtl`, the description Jig writes puts a co-simulated
+peripheral where the model would sit, with the clock the RTL is built for:
 
 ```text
 block: CoSimulated.CoSimulatedPeripheral @ sysbus <0x43C00000, +0x1000>
@@ -58,21 +61,20 @@ block: CoSimulated.CoSimulatedPeripheral @ sysbus <0x43C00000, +0x1000>
 
 The peripheral passes the RTL each access's offset from the start of its
 range. RTL that decodes full bus addresses, such as a block behind its own
-address decoder, needs `useAbsoluteAddress: true` in the fragment as
-well. The model's clock advances in batches of `limitBuffer` cycles.
+address decoder, needs `useAbsoluteAddress: true` among the arguments as
+well. The model's clock advances in batches of `limitBuffer` cycles. An
+`irq: N` argument connects the RTL's interrupt output to `IRQ_F2P[N]`.
 
 ```{list-table}
 :header-rows: 1
 :widths: 20 80
 
-* - Key
+* - Argument
   - Meaning
-* - `peripheral`
-  - The co-simulated peripheral's name in the fragment.
 * - `build`
   - A script Jig runs as `build <output-dir> --clock-mhz <N>`, with `N`
-    taken from the peripheral's `frequency`, which must be a whole number
-    of MHz. It leaves `library` in the output directory.
+    taken from `frequency`, which must be a whole number of MHz. It leaves
+    `library` in the output directory.
 * - `sources`
   - A Verilator file list. Options (`+define+`, `-I`) and `$(NAME)`
     entries are skipped when Jig computes the cache key.
@@ -82,12 +84,13 @@ well. The model's clock advances in batches of `limitBuffer` cycles.
 * - `library`
   - The file name the build produces.
 * - `context`
-  - Text the model receives before it starts; `{workdir}` expands to the
+  - Text the model receives before it starts; `{workdir}` in it is the
     machine's work directory.
+* - Any other
+  - A property of the co-simulated peripheral, such as `frequency`.
 ```
 
-Paths in `cosim` resolve against the board's root; `platform` resolves
-against board.yaml.
+Paths in `cosim(...)` resolve against the board's root.
 
 ## 2. Build the library
 
@@ -104,7 +107,7 @@ nothing else does.
 
 ## 3. Choose the RTL in a plan
 
-A plan picks the choice in the board declaration:
+A plan picks the choice on the board's line:
 
 ```jig
 system "register block in RTL" {

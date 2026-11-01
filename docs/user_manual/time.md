@@ -28,7 +28,7 @@ else. `jig boot` prints how fast a board ran against real time.
 ## Time on a board
 
 Renode advances each core by the instructions it executes, at the
-`performance_mips` rate of the board definition, and runs each
+`mips` rate of its device in the board file, and runs each
 peripheral's timers from that time. A timing test therefore checks the
 firmware against the models' clocks, not against the cycle counts of real
 silicon.

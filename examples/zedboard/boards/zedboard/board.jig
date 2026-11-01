@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Graham Power
+#
+# Digilent ZedBoard (Zynq XC7Z020-CLG484, 512 MB of DDR3) running the example
+# firmware. Node 1 bridges the host computer's KISS link on UART0 to the CAN
+# bus; node 2 is on the CAN bus only (NODE_HAS_KISS in firmware/src/main.c).
+board "zedboard" {
+    description: "Digilent ZedBoard running the example firmware as CSP node 1 or 2"
+    root: "../.."                       # examples/zedboard: firmware paths start here
+    plugin: "../zedboard.py"
+
+    option node: choice(1, 2)           # the firmware build, which is also its CSP address
+
+    # No XSA: the firmware programs the clocks it uses, the plan of UG585
+    # table 25-3 example 1 from the 33.333 MHz PS_CLK.
+    device zynq: zynq7000(part: "XC7Z020-CLG484", straps: "jtag", ddr: 512 MiB,
+                          clocks: {cpu_3x2x: 333.333333 MHz, cpu_1x: 111.111111 MHz,
+                                   uart_ref: 50 MHz, can_ref: 100 MHz}) {
+        firmware: {app: "firmware/build/zed-node-{node}.elf"}
+        boot jtag
+        protocol csp(address: node, housekeeping: {port: 10, request: x"01", codec: "zed-status"})
+        interface uart1: cli
+        interface can0: csp over cfp
+        if node == 1 {
+            interface uart0: csp over kiss
+        }
+    }
+
+    external link console: uart(baud: 115200, members: [zynq.uart1])
+    external link kiss: uart(baud: 115200, members: [zynq.uart0])
+    external link can: can(bitrate: 1 Mbit/s, members: [zynq.can0])
+}

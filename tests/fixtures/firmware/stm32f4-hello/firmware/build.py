@@ -2,7 +2,7 @@
 
     python build.py <output> [--cc <arm-none-eabi-gcc>]
 
-The stm32 SoC driver runs it with ``--cc`` (board.yaml ``stm32.firmware``).
+The stm32 family runs it with ``--cc`` (the device's ``firmware: build(...)``).
 Without ``--cc`` the compiler is ``ARM_NONE_EABI_GCC``, else
 ``arm-none-eabi-gcc`` on PATH. Any compiler or linker warning fails the build.
 """

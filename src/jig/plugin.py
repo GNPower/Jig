@@ -1,8 +1,8 @@
-"""The plugin API, version 1: everything a board plugin may use.
+"""The plugin API, version 2: everything a board plugin may use.
 
-A board names its plugin in its board.yaml: ``plugin: plugin.py`` (a file) or
-``plugin: myboard`` (a package directory with ``__init__.py``), relative to
-the board.yaml. Jig imports it the first time a simulation uses the board,
+A board names its plugin in its board file: ``plugin: "plugin.py"`` (a file)
+or ``plugin: "myboard"`` (a package directory with ``__init__.py``), relative
+to the board file. Jig imports it the first time a simulation uses the board,
 under a module name of its own (a file plugin's sibling modules and a package
 plugin's submodules import relatively, ``from . import codec``; nothing joins
 ``sys.path``), and calls its ``register(api)`` once per board definition::
@@ -36,20 +36,31 @@ What a plugin registers:
     system that registered it. With ``attribute=True`` a plan reads the
     member like a field and Jig calls ``fn(handle)``.
 ``api.hk_codec(name, codec)``
-    A housekeeping codec a board.yaml names in ``csp.housekeeping.codec``:
+    A housekeeping codec a board file names in ``protocol csp(housekeeping:
+    {codec: ...})``:
     ``codec(context: HkContext)`` returns a decoder, called with each reply's
     payload in order, returning the reply's fields. ``node.hk(board)``,
     ``node.hk_published(board)`` and ``bus.hk(board)`` dispatch through the
     target board's codec and port.
 ``api.node_kind(name, constructor)``
     A ``node`` kind for system declarations: ``constructor(...)`` returns a
-    ``NodeDeclaration``.
+    ``NodeDeclaration``. A node joins a system link as one of its members;
+    when the system starts, Jig calls its handle's ``start(system, link)``
+    with the ``NodeLink`` it joined (the link's name and kind, the harness's
+    port on it, the layers under the node, the boards' links it joins). A
+    CSP node's handle keeps it as ``node.link``.
+``api.protocol(name, *, runs_on, provides, parse=None)``
+    A protocol layer for stacks (``interface uart2: mine over kiss``,
+    ``node n: x(...) over mine``): what it runs on and provides (such as
+    ``"packets"``, ``"byte stream"``), and ``parse(arguments, where)``, which
+    checks the layer's arguments and returns its settings.
 ``api.bus_observer(name, factory)``
     ``factory(context: BusContext)`` runs for every CAN bus of a simulation
     that includes the board; plugin members reach the result through
     ``bus.observer(name)``.
-``api.soc_driver(name, factory)``
-    The SoC driver for ``soc: name`` on this plugin's board.
+``api.device_family(name, factory)``
+    The driver class of the device family ``name`` (``device d: name(...)``)
+    on this plugin's board.
 ``api.zynq_hooks(images=, boot_table=, qspi_image=)``
     How the Zynq-7000 driver gets this board's firmware images, boot metadata
     and Quad-SPI flash image (each a function of a ``MachineConfig``).
@@ -60,15 +71,21 @@ What a plugin registers:
     ends, and returns a background handle (``.stop()``, ``.running``).
 
 The ``api`` also tells the plugin which board it serves: ``api.board`` (the
-parsed board.yaml), ``api.name``, ``api.root`` and ``api.directory``. A board
-handle gives plugin code ``definition``, ``config``, ``root``, ``workdir``,
-``console`` and ``emit(kind, detail)``.
+board file, evaluated with each option's default), ``api.name``, ``api.root``
+and ``api.directory``. A board handle gives plugin code ``definition`` (the
+board for the machine's option values, whose ``firmware``, ``boot``,
+``storage`` and ``section("csp")`` describe its one device),
+``config``, ``root``, ``workdir``, ``console`` and ``emit(kind, detail)``. A
+CSP node handle gives it ``link``, the ``NodeLink`` the node joined, whose
+``board_links`` say which boards' links that system link joins.
 
 Nothing outside this module is public to plugins: every other module of the
 ``jig`` package is internal and may change in any release. This module
 follows semantic versioning through ``API_VERSION``; a plugin may declare the
-version it was written for as ``JIG_PLUGIN_API = 1``, and Jig refuses to load
-it under another. Board repositories pin ``jig-dsl>=0.1,<0.2``.
+version it was written for as ``JIG_PLUGIN_API = 2``, and Jig refuses to load
+it under another. Version 2 (jig-dsl 0.2) gave node kinds their link through
+``start(system, link)`` instead of ``link`` and ``bus`` arguments and added
+``api.protocol``, and renamed ``api.soc_driver`` to ``api.device_family``.
 """
 
 from __future__ import annotations
@@ -92,12 +109,14 @@ from jig.ext.zynq7000.driver import BootTableHook, ImagesHook, QspiImageHook, Zy
 from jig.lang.library import (
     BackgroundHandle,
     BoardHandle,
+    BoardLinkRef,
     BusHandle,
     ConsoleHandle,
     DslError,
-    InterfaceRef,
+    LinkSpec,
     Match,
     NodeDeclaration,
+    NodeLink,
     SystemContext,
     periodic,
 )
@@ -107,13 +126,14 @@ from jig.renode.session import RenodeSession
 from jig.runtime.environment import Background, Profile
 from jig.system.boards import Board as BoardDefinition
 from jig.system.boards import SectionParser
+from jig.system.protocols import ArgumentParser, Layer, LayerKind
 from jig.system.registry import HANDLE_TYPES, Member, Owner, Staged
 from jig.system.socs import MachineConfig, SocDriver
 from jig.system.system import BusContext
 from jig.transports.can import CanBusPort, CanFrame
 from jig.transports.uart import UartPort
 
-API_VERSION = 1
+API_VERSION = 2
 
 PRIORITY_CRITICAL = _csp.PRIORITY_CRITICAL
 PRIORITY_HIGH = _csp.PRIORITY_HIGH
@@ -131,6 +151,7 @@ __all__ = [
     "BackgroundHandle",
     "BoardDefinition",
     "BoardHandle",
+    "BoardLinkRef",
     "BootTableHook",
     "BusContext",
     "BusHandle",
@@ -148,12 +169,15 @@ __all__ = [
     "HkContext",
     "HkDecoder",
     "ImagesHook",
-    "InterfaceRef",
     "JigError",
+    "Layer",
+    "LayerKind",
+    "LinkSpec",
     "MachineConfig",
     "Match",
     "NodeDeclaration",
     "NodeHandle",
+    "NodeLink",
     "Packet",
     "PluginApi",
     "Profile",
@@ -175,7 +199,7 @@ __all__ = [
 _IDENTIFIER = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
 _FAMILY = re.compile(r"[a-z0-9][a-z0-9_.-]*")
 _BUILT_IN = {
-    "board": BoardHandle.dsl_members,
+    "board": BoardHandle.dsl_members | {"console"},  # console: the link plans reach by name
     "node": NodeHandle.dsl_members,
     "bus": BusHandle.dsl_members,
 }
@@ -199,7 +223,7 @@ class PluginApi:
 
     @property
     def board(self) -> BoardDefinition:
-        """The board definition (board.yaml) the plugin is registering for."""
+        """The board the plugin is registering for."""
         if self._board is None:
             raise ConfigError(f"{self._owner} serves no single board")
         return self._board
@@ -210,12 +234,12 @@ class PluginApi:
 
     @property
     def root(self) -> Path:
-        """The board's root (board.yaml ``root``): where its repository paths start."""
+        """The board's root (its ``root`` setting): where its repository paths start."""
         return self.board.root
 
     @property
     def directory(self) -> Path:
-        """The directory holding the board's board.yaml."""
+        """The directory holding the board's board file."""
         return self.board.directory
 
     # ------------------------------------------------------------ registering
@@ -263,7 +287,7 @@ class PluginApi:
         )
 
     def hk_codec(self, name: str, codec: HkCodec) -> None:
-        """A housekeeping codec (``csp.housekeeping.codec: name``)."""
+        """A housekeeping codec (``csp(housekeeping: {codec: name})``)."""
         if not isinstance(name, str) or not _FAMILY.fullmatch(name):
             raise self._fail(f"codec name {name!r} is not lower case letters, digits, '.-_'")
         self._callable(codec, f"codec {name}", self._owner)
@@ -275,18 +299,43 @@ class PluginApi:
         self._callable(constructor, f"node kind {name}", self._owner)
         self._stage(self.staged.node_kinds, name, constructor, f"node kind {name!r}")
 
+    def protocol(
+        self,
+        name: str,
+        *,
+        runs_on: tuple[str, ...] | str,
+        provides: str,
+        parse: ArgumentParser | None = None,
+    ) -> None:
+        """A protocol layer stacks can name: what it runs on, what it
+        provides, and how it reads its arguments."""
+        self._identifier(name, "protocol layer")
+        below = (runs_on,) if isinstance(runs_on, str) else tuple(runs_on)
+        if not below or not all(isinstance(item, str) and item for item in below):
+            raise self._fail(f"protocol layer {name}: runs_on names what it runs on")
+        if not isinstance(provides, str) or not provides:
+            raise self._fail(f"protocol layer {name}: provides names what it provides")
+        if parse is not None:
+            self._callable(parse, f"protocol layer {name} parse", self._owner)
+        self._stage(
+            self.staged.protocols,
+            name,
+            LayerKind(name, below, provides, parse),
+            f"protocol layer {name!r}",
+        )
+
     def bus_observer(self, name: str, factory: Callable[[BusContext], Any]) -> None:
         """An observer made for every CAN bus (``bus.observer(name)``)."""
         self._identifier(name, "bus observer")
         self._callable(factory, f"bus observer {name}", self._owner)
         self._stage(self.staged.bus_observers, name, factory, f"bus observer {name!r}")
 
-    def soc_driver(self, name: str, factory: Callable[[], SocDriver]) -> None:
-        """The driver class for ``soc: name`` on this plugin's board."""
+    def device_family(self, name: str, factory: Callable[[], SocDriver]) -> None:
+        """The driver class of the device family ``name`` on this plugin's board."""
         if not isinstance(name, str) or not _FAMILY.fullmatch(name):
-            raise self._fail(f"SoC family {name!r} is not lower case letters, digits, '.-_'")
-        self._callable(factory, f"SoC driver {name}", self._owner)
-        self._stage(self.staged.soc_drivers, name, factory, f"SoC driver {name!r}")
+            raise self._fail(f"device family {name!r} is not lower case letters, digits, '.-_'")
+        self._callable(factory, f"device family {name}", self._owner)
+        self._stage(self.staged.device_families, name, factory, f"device family {name!r}")
 
     def zynq_hooks(
         self,
@@ -348,12 +397,13 @@ class PluginApi:
 
 class ExtensionApi(PluginApi):
     """The API the extensions bundled with Jig register through: a plugin's,
-    plus board.yaml sections. Board plugins never receive it."""
+    plus board settings. Board plugins never receive it."""
 
     def board_section(self, name: str, parse: SectionParser) -> None:
-        """A top-level board.yaml key: ``parse(value, context)`` (the context
-        names the file, the board's directory and root) returns what boards
-        hold under ``board.section(name)``."""
+        """A board setting (``name: value`` in a board file):
+        ``parse(value, context)`` (the context names the file, the board's
+        directory and root) returns what boards hold under
+        ``board.section(name)``."""
         self._identifier(name, "section")
         self._callable(parse, f"section {name}", self._owner)
         self._stage(self.staged.sections, name, parse, f"section {name!r}")

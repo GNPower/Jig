@@ -1,6 +1,6 @@
 """Jig: a test language and harness for firmware running on Renode.
 
-The package is board-agnostic. Boards are described by data (``board.yaml``),
+The package is board-agnostic. Board files (``board.jig``) describe boards,
 peripheral models are C# sources Renode loads, and test plans are ``.jig``
 scripts.
 """

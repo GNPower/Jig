@@ -18,10 +18,11 @@ follows a ramp, and pings across a one-second link outage.
 import "zed.jig"
 
 system "two ZedBoards on CAN" {
-    board a: "zed-a"
-    board b: "zed-b"
-    bus can0: can(bitrate: 1 Mbit/s, members: [a.can, b.can])
-    node host: csp(address: 10, link: a.kiss)
+    board a: "zedboard" (node: 1)
+    board b: "zedboard" (node: 2)
+    link can0: can(bitrate: 1 Mbit/s, members: [a.can, b.can])
+    node host: csp(address: 10) over kiss
+    link ground: uart(members: [a.kiss, host])
 }
 
 setup {
@@ -146,11 +147,11 @@ test fails.
 
 ## Profiles on sensor inputs
 
-The ZedBoard example has no analog inputs, but boards with an
-analog-to-digital converter model can list their inputs in `board.yaml`
-under `sensors`. A plan then sets an input in volts, or drives it from a
-profile in the background. Here `dut` is a board whose definition names an
-input `supply`:
+The ZedBoard example has no analog inputs, but a board with an
+analog-to-digital converter names its inputs in `sensor` lines of its
+board file, such as `sensor supply: adc.channel[3]`. A plan then sets an
+input in volts, or drives it from a profile in the background. Here `dut`
+is a board whose board file names an input `supply`:
 
 ```jig
 test "the supply input follows a slow sine" {

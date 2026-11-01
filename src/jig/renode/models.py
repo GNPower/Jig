@@ -33,8 +33,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from xml.sax.saxutils import escape, quoteattr
 
-import yaml
-
 from jig import project
 from jig.errors import ConfigError, RenodeError, ToolchainError
 
@@ -121,39 +119,32 @@ def jig_model_set() -> ModelSet:
 def board_model_set(directory: Path, name: str | None = None) -> ModelSet:
     """The model set of a board directory.
 
-    ``board.yaml``'s ``models`` (globs, relative to the board's ``root`` when
-    it names one, else to the directory) when it has that key; otherwise every
-    .cs file under ``<directory>/models``, or under ``directory`` itself."""
+    The ``models`` setting of its ``board.jig`` (globs relative to the board
+    file), with the board's root as the set's root, when it has one;
+    otherwise every .cs file under ``<directory>/models``, or under
+    ``directory`` itself."""
     directory = directory.resolve()
     if not directory.is_dir():
         raise ConfigError(f"{directory} is not a directory")
     set_name = name or directory.name
-    board_file = directory / "board.yaml"
+    board_file = directory / "board.jig"
     if board_file.is_file():
-        try:
-            data = yaml.safe_load(board_file.read_text(encoding="utf-8")) or {}
-        except yaml.YAMLError as exc:
-            raise ConfigError(f"{board_file}: {exc}") from None
-        if isinstance(data, dict) and data.get("models") is not None:
-            patterns = data["models"]
-            if isinstance(patterns, str):
-                patterns = [patterns]
-            if not isinstance(patterns, list) or not all(isinstance(p, str) for p in patterns):
-                raise ConfigError(f"{board_file}: models must be a glob or a list of globs")
-            root_value = data.get("root")
-            root = (directory / root_value).resolve() if isinstance(root_value, str) else directory
-            return ModelSet.glob(str(data.get("name") or set_name), root, patterns)
+        from jig.system import boards
+
+        board = boards.load(board_file)
+        if board.models:
+            return ModelSet(name=name or board.name, root=board.root, files=board.models)
     models = directory / "models"
     root = models if models.is_dir() else directory
     files = tuple(sorted(root.rglob("*.cs")))
     if not files:
-        raise ConfigError(f"{directory}: no C# models (no board.yaml models: key, no .cs files)")
+        raise ConfigError(f"{directory}: no C# models (no models setting, no .cs files)")
     return ModelSet(name=set_name, root=root, files=files)
 
 
 def board_sets(boards: Iterable[str | Path]) -> list[ModelSet]:
     """The model sets of boards named by directory (``board_model_set``) or by
-    name on the project's board search path (board.yaml schema 2, through
+    name on the project's board search path (through
     ``jig.system.boards.model_sets``)."""
     sets: list[ModelSet] = []
     for board in boards:

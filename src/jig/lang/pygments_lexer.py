@@ -1,15 +1,18 @@
-"""Pygments lexer for Jig plans (``.jig`` files).
+"""Pygments lexer for Jig plans and board files (``.jig`` files).
 
 jig-dsl registers :class:`JigLexer` under the ``pygments.lexers`` entry point
 as ``jig``, so Sphinx, ``pygmentize -l jig`` and other Pygments users highlight
 plans once the package is installed. The rules follow the grammar in
 ``jig/lang/grammar/jig.tx``:
 
-* the reserved words of statements, word operators and ``true false none``;
-* declarations (``system``, ``board``, ``bus``, ``node``, ``const``,
-  ``procedure``, ``setup``, ``teardown``, ``test``, ``import``) only where they
-  open a declaration, since the grammar lets ``board`` or ``test`` name a
-  variable elsewhere.
+* the reserved words of statements, word operators (``over`` among them) and
+  ``true false none``;
+* declarations (``system``, ``board``, ``link``, ``node``, ``const``,
+  ``procedure``, ``setup``, ``teardown``, ``test``, ``import``, and in board
+  files ``option``, ``device``, ``peripheral``, ``external link``,
+  ``sensor``, ``boot``, ``protocol``, ``interface``, ``ip``, ``unmodelled``)
+  only where they open a declaration, since the grammar lets ``board`` or
+  ``test`` name a variable elsewhere.
 * quantities, a number and its unit (``100 ms``, ``1 Mbit/s``).
 * text with escapes and ``{field}`` interpolation, and bytes (``x"01 ff"``).
 * regular expressions (``/ready (\\d+)/i``) where an operand is expected, and
@@ -76,11 +79,12 @@ KEYWORDS = (
     "continue",
     "as",
 )
-WORD_OPERATORS = ("and", "or", "not", "in", "contains", "matches")
+WORD_OPERATORS = ("and", "or", "not", "in", "contains", "matches", "over")
 CONSTANTS = ("true", "false", "none")
 
-# Functions every plan sees (jig.lang.library.builtin_functions) and the
-# constructors a system declaration uses.
+# Functions every plan sees (jig.lang.library.builtin_functions), the
+# constructors a system declaration uses, the protocol layers and what board
+# files declare with.
 BUILTINS = (
     "now",
     "len",
@@ -112,8 +116,40 @@ BUILTINS = (
     "time_after",
     "seconds_between",
     "date_fields",
+    "uart",
     "can",
+    "spi",
+    "qspi",
+    "i2c",
+    "gpio",
     "csp",
+    "kiss",
+    "cfp",
+    "cli",
+    "vt100",
+    "choice",
+    "memory",
+    "cosim",
+    "airhdl",
+    "build",
+    "command",
+    "zynq7000",
+    "stm32",
+)
+
+# Words that open a declaration followed by a name and a colon.
+DECLARATIONS = (
+    "board",
+    "link",
+    "node",
+    "option",
+    "device",
+    "peripheral",
+    "sensor",
+    "protocol",
+    "interface",
+    "ip",
+    "unmodelled",
 )
 
 # The grammar's Quantity units, longest alternatives first where one is a
@@ -167,10 +203,30 @@ class JigLexer(RegexLexer):  # type: ignore[misc,unused-ignore]
             # Declarations: these words are reserved only where they open one.
             (r"(import)(\s+)(?=\")", bygroups(Keyword.Namespace, Whitespace)),
             (
-                rf"(board|bus|node)(\s+)({IDENTIFIER})(\s*)(:)",
+                rf"(external)(\s+)(link)(\s+)({IDENTIFIER})(\s*)(:)",
+                bygroups(
+                    Keyword.Declaration,
+                    Whitespace,
+                    Keyword.Declaration,
+                    Whitespace,
+                    Name.Variable,
+                    Whitespace,
+                    Punctuation,
+                ),
+                "operand",
+            ),
+            (
+                rf"({'|'.join(DECLARATIONS)})(\s+)({IDENTIFIER})(\s*)(:)",
                 bygroups(Keyword.Declaration, Whitespace, Name.Variable, Whitespace, Punctuation),
                 "operand",
             ),
+            # boot jtag, boot qspi: {...}; protocol csp(...) without a name
+            (
+                rf"(boot)(\s+)({IDENTIFIER})",
+                bygroups(Keyword.Declaration, Whitespace, Name.Variable),
+            ),
+            (r"(protocol)(?=\s+[^\W\d]\w*\s*\()", Keyword.Declaration),
+            (r"(board)(?=\s*\")", Keyword.Declaration),
             (
                 rf"(const)(\s+)({IDENTIFIER})(\s*)(=)",
                 bygroups(Keyword.Declaration, Whitespace, Name.Constant, Whitespace, Operator),

@@ -1,27 +1,33 @@
-"""Board contracts: what a board.yaml key requires of the peripheral it names.
+"""Board contracts: what a board file's settings require of the peripherals
+they name.
 
 The harness drives some board IC models through monitor methods: it attaches
 storage images, sets sensor inputs, sets and reads the real-time clock and
-power-cycles the chips on the board's supply. Each board.yaml key that names
-such a peripheral requires it to implement one C# interface from
+power-cycles the chips on the board's supply. Each setting that names such a
+peripheral requires it to implement one C# interface from
 ``Antmicro.Renode.Peripherals.Jig.Contracts`` (``src/jig/models/Contracts``):
 
-``storage.<name>.peripheral``
-    ``IStorage`` (``AttachImage(path)``, ``Size``); ``storage.<name>.size``
-    must equal the model's ``Size``.
-``sensors.<name>.adc``
+``storage: [...]``
+    ``IStorage`` (``AttachImage(path)``, ``Size``) for every peripheral in the
+    list; a ``size`` property the peripheral declares must equal the model's
+    ``Size``.
+``sensor NAME: ...``
     ``IAnalogInputs`` (``SetChannelVoltage``, ``GetChannelCode``,
-    ``CodeFor``, ``ChannelCount``); ``sensors.<name>.channel`` must be below
-    ``ChannelCount``.
+    ``CodeFor``, ``ChannelCount``) for the converter, and the channel must be
+    below ``ChannelCount``; a device's own converter that Jig drives through
+    an ``Analog.ADCChannelSource`` is left out.
 ``rtc``
     ``IRealTimeClock`` (``SetDateTime``, ``GetDateTime``).
-``power.restart``
-    ``IPowerCycled`` (``PowerCycle``) for every peripheral in the list.
+
+Power cycles need no setting: every peripheral off the ``backup_supply``
+whose model implements ``IPowerCycled`` restarts with the board, and the
+driver asks the machine which ones do (``jig.system.socs.power_cycled``).
 
 ``verify`` checks a board's machine, built in a running session, against
-these and returns what is wrong; ``jig check`` reports the problems before a
-plan reaches a missing method. It asks Renode with the monitor query
-``machine JigContracts "<peripheral>"`` (``Contracts/ContractQueries.cs``).
+these and returns what is wrong; ``jig check --contracts`` reports the
+problems before a plan reaches a missing method. It asks Renode with the
+monitor query ``machine JigContracts "<peripheral>"``
+(``Contracts/ContractQueries.cs``).
 """
 
 from __future__ import annotations
@@ -57,7 +63,7 @@ class MonitorSession(Protocol):
 
 
 class StorageKey(Protocol):
-    """A ``storage.<name>`` entry (``jig.system.boards.Storage``)."""
+    """A peripheral on the ``storage`` list (``jig.system.boards.Storage``)."""
 
     @property
     def name(self) -> str: ...
@@ -66,11 +72,11 @@ class StorageKey(Protocol):
     def peripheral(self) -> str: ...
 
     @property
-    def size(self) -> int: ...
+    def size(self) -> int | None: ...
 
 
 class SensorKey(Protocol):
-    """A ``sensors.<name>`` entry (``jig.system.boards.Sensor``)."""
+    """A ``sensor`` line (``jig.system.boards.Sensor``)."""
 
     @property
     def name(self) -> str: ...
@@ -81,9 +87,12 @@ class SensorKey(Protocol):
     @property
     def channel(self) -> int: ...
 
+    @property
+    def source(self) -> str | None: ...
+
 
 class BoardKeys(Protocol):
-    """The board.yaml keys ``verify`` checks (``jig.system.boards.Board``)."""
+    """The settings ``verify`` checks (``jig.system.boards.Board``)."""
 
     @property
     def storage(self) -> Sequence[StorageKey]: ...
@@ -94,16 +103,13 @@ class BoardKeys(Protocol):
     @property
     def rtc(self) -> str | None: ...
 
-    @property
-    def power_restart(self) -> Sequence[str]: ...
-
 
 @dataclass(frozen=True)
 class Problem:
-    """A board.yaml key whose peripheral does not meet its contract."""
+    """A setting whose peripheral does not meet its contract."""
 
-    key: str  # the board.yaml key, e.g. "storage.flash0.peripheral" or "power.restart[2]"
-    peripheral: str  # the monitor name the key gives
+    key: str  # the setting, e.g. "storage flash0", "sensor supply" or "rtc"
+    peripheral: str  # the peripheral's name in the machine's monitor
     message: str
 
     def __str__(self) -> str:
@@ -154,16 +160,15 @@ def query(session: MonitorSession, machine: str, peripheral: str) -> Contracts |
 
 
 def verify(session: MonitorSession, machine: str, board: BoardKeys) -> list[Problem]:
-    """Check every board.yaml key that names a peripheral of ``board`` (a
+    """Check every setting that names a peripheral of ``board`` (a
     ``jig.system.boards.Board``) against the contract it needs, in ``machine``,
     the name of the board's machine built in ``session``. The machine need not
     be booted: the query reads its peripheral tree and runs no simulated time.
 
-    Covers ``storage.<name>.peripheral`` (IStorage, with ``size``),
-    ``sensors.<name>.adc`` (IAnalogInputs, with ``channel``), ``rtc``
-    (IRealTimeClock) and each entry of ``power.restart`` (IPowerCycled).
-    Returns the problems in board.yaml order; an empty list means every key is
-    met."""
+    Covers ``storage`` (IStorage, with the declared ``size``), the
+    converters of ``sensor`` lines (IAnalogInputs, with the channel) and
+    ``rtc`` (IRealTimeClock). Returns the problems in the board's order; an
+    empty list means every setting is met."""
     found: dict[str, Contracts | None] = {}
 
     def contracts_of(peripheral: str) -> Contracts | None:
@@ -191,30 +196,26 @@ def verify(session: MonitorSession, machine: str, board: BoardKeys) -> list[Prob
         return contracts
 
     for storage in board.storage:
-        key = f"storage.{storage.name}.peripheral"
+        key = f"storage {storage.name}"
         contracts = require(key, storage.peripheral, STORAGE)
-        if contracts is not None and contracts.size != storage.size:
+        if contracts is not None and storage.size is not None and contracts.size != storage.size:
             problems.append(
                 Problem(
-                    f"storage.{storage.name}.size",
+                    key,
                     storage.peripheral,
-                    f"board.yaml gives {storage.size} bytes, the model has {contracts.size}",
+                    f"its size property gives {storage.size} bytes, the model has {contracts.size}",
                 )
             )
     for sensor in board.sensors:
-        key = f"sensors.{sensor.name}.adc"
+        if sensor.source is not None:
+            continue  # an ADCChannelSource drives it, not IAnalogInputs
+        key = f"sensor {sensor.name}"
         contracts = require(key, sensor.adc, ANALOG_INPUTS)
         count = None if contracts is None else contracts.channel_count
         if count is not None and not 0 <= sensor.channel < count:
             problems.append(
-                Problem(
-                    f"sensors.{sensor.name}.channel",
-                    sensor.adc,
-                    f"channel {sensor.channel} is outside 0-{count - 1}",
-                )
+                Problem(key, sensor.adc, f"channel {sensor.channel} is outside 0-{count - 1}")
             )
     if board.rtc is not None:
         require("rtc", board.rtc, REAL_TIME_CLOCK)
-    for index, peripheral in enumerate(board.power_restart):
-        require(f"power.restart[{index}]", peripheral, POWER_CYCLED)
     return problems

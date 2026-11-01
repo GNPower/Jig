@@ -1,16 +1,17 @@
 # User Manual
 
 The User Manual is the reference: every statement of the plan language,
-every member of the handles a plan works with, every key of the two
-configuration files, every command, and what a run leaves behind. Read the
-{doc}`../tutorials/index` first for a guided start.
+every member of the handles a plan works with, every line of a board
+file, every key of jig.toml, every command, and what a run leaves
+behind. Read the {doc}`../tutorials/index` first for a guided start.
 
 ```{toctree}
 :maxdepth: 2
 
 language
 library
-board_yaml
+board_files
+programmable_logic
 jig_toml
 cli
 results
@@ -27,10 +28,17 @@ renode_defects
 
 {doc}`library`
 : Built-in functions, profiles and calendar time, and the members of
-  boards, consoles, buses and CSP nodes.
+  boards and their devices, peripherals and links, consoles (and what the
+  `vt100` layer renders for them), CAN links and CSP nodes.
 
-{doc}`board_yaml`
-: board.yaml schema 2, key by key, with the changes from schema 1.
+{doc}`board_files`
+: Board files: devices and their families, peripherals, links, sensors,
+  protocol stacks, programmable logic, options, and the platform
+  description Jig writes from them.
+
+{doc}`programmable_logic`
+: The models, interrupts, reset domains and wiring Jig generates from a
+  Zynq-7000 block design, and what `ip` lines change.
 
 {doc}`jig_toml`
 : The project file: board roots, the library path, Renode, defaults and

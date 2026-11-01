@@ -21,15 +21,15 @@ and the terms of the one before.
 * - 1
   - {doc}`one_zedboard`
   - `one_zedboard.jig`
-  - System declarations, setup and test blocks, console commands and
-    expectations, procedures, checks, a CSP node on a serial link, reading
-    the report
+  - The board file, system declarations with a board option and a link,
+    setup and test blocks, console commands and expectations, procedures,
+    checks, a CSP node on a serial link, reading the report
 * - 2
   - {doc}`two_zedboards`
   - `two_zedboards.jig`
-  - Two boards on a CAN bus, imported procedures, parallel tasks, routed
-    CSP traffic, the bus observer, decoded status records, `try` and
-    `catch`
+  - Two instances of one board on a CAN link, imported procedures,
+    parallel tasks, routed CSP traffic, the bus observer, decoded status
+    records, `try` and `catch`
 * - 3
   - {doc}`profiles_timelines`
   - `profiles_timelines.jig`

@@ -1,0 +1,50 @@
+# A Zynq-7000 board for Jig's own tests, which read it and never load it into
+# Renode. Repository paths are relative to the board's root, tests/fixtures
+# (the nearest .git is the Jig checkout's). The tests that need the XSA write
+# it: it holds ps7_init.tcl and a bitstream and no block design, so the ip
+# lines give address ranges and IRQ_F2P indexes.
+board "example-zynq" {
+    description: "Zynq-7000 test fixture with one PL register block"
+    root: "../.."
+    storage: [flash0]
+    rtc: rtc0
+    backup_supply: [rtc0]
+
+    option pl: choice({model: "the register block as a C# model",
+                       rtl: "the register block as Verilated RTL"})
+
+    device zynq: zynq7000(part: "XC7Z020-CLG484", xsa: "build/example.xsa", ps_clk: 50 MHz,
+                          ps_version: 3, straps: "jtag", ddr: 512 MiB, mips: 120) {
+        firmware: {app: "build/app.elf"}
+        boot jtag
+        boot qspi: {storage: flash0}
+        protocol csp(address: 5)
+        interface uart1: cli
+        interface uart0: csp over kiss
+        interface can0: csp over cfp
+        if pl == "model" {
+            ip block: "Example.ExampleBlock" (on: 0x43C00000 .. 0x43C00FFF,
+                registerMap: airhdl("hdl/example_regs_pkg.sv", "hdl/example_regs.sv"))
+        } else {
+            ip block: cosim(on: 0x43C00000 .. 0x43C00FFF, build: "cosim/build.sh",
+                            sources: "cosim/sources.f", inputs: ["hdl"],
+                            library: "libexample_block.so", context: "trace={workdir}/block.vcd",
+                            frequency: 20 MHz, limitBuffer: 1000)
+            commands: ["block Trace @{workdir}/block.vcd"]
+        }
+    }
+
+    peripheral flash0: "JigFixtures.SpiNorFlash" (size: 16 MiB)
+    peripheral adc0: "JigFixtures.SimpleAdc" (channels: 8)
+    peripheral rtc0: "JigFixtures.SimpleRtc"
+
+    link boot_flash: qspi(controller: zynq.qspi, targets: {0: flash0})
+    link housekeeping: spi(controller: zynq.spi0, targets: {0: adc0})
+    link clock: i2c(controller: zynq.i2c0, targets: {0x68: rtc0})
+
+    sensor supply: adc0.channel[2]
+
+    external link console: uart(baud: 115200, members: [zynq.uart1])
+    external link kiss: uart(members: [zynq.uart0])
+    external link can: can(bitrate: 1 Mbit/s, members: [zynq.can0])
+}

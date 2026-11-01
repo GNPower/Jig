@@ -32,8 +32,9 @@ jig run examples/zedboard/plans/*.jig
 ```
 
 `jig run` finds `jig.toml` by searching up from each plan. `jig boards`,
-`jig check`, `jig check --contracts` and `jig boot zed-a` search up from the
-working directory, so run those inside `examples/zedboard`.
+`jig check`, `jig check --contracts`, `jig platform zedboard` and
+`jig boot zedboard --option node=1` search up from the working directory, so
+run those inside `examples/zedboard`.
 
 <!-- markdownlint-disable MD013 -->
 <!-- pyml disable md013-->
@@ -41,14 +42,14 @@ working directory, so run those inside `examples/zedboard`.
 | Path | Contents |
 |---|---|
 | `jig.toml` | the project: board root, plan library, accepted Renode versions (`>=1.17.0,<1.18`) |
-| `boards/zed-a/board.yaml`, `boards/zed-b/board.yaml` | the board definitions (schema 2): Jig's `xilinx/zynq7000` platform plus `zedboard.repl`, JTAG boot without an XSA, the ELF, the console on UART1 (`eol: cr`), the KISS link on UART0 (zed-a only), CAN0, the CSP address and the status codec |
-| `boards/zedboard.py` | the board plugin both definitions name |
+| `boards/zedboard/board.jig` | the board file: the Zynq-7020 with the clocks the firmware sets, JTAG boot straps and 512 MiB of DDR, JTAG boot without an XSA, `option node` choosing the ELF and the CSP address, the console on UART1 (`cli`), CSP over CAN0, CSP in KISS frames on UART0 (node 1 only), the status codec, and the external links `console`, `kiss` and `can` |
+| `boards/zedboard.py` | the board plugin the board file names |
 | `lib/zed.jig` | `booted(board, address)`: wait for a board's banner and first prompt |
 | `plans/one_zedboard.jig` | zed-a on its own: banner, console commands, uptime against simulated time, ping, the status record as bytes, uptime in whole seconds on port 6 |
 | `plans/two_zedboards.jig` | both boards and the host computer: console pings over CAN, routed packets, a 200-byte ping in 26 frames each way, decoded status records, a ping nobody answers |
 | `plans/profiles_timelines.jig` | a status poll every second, pings whose size follows a ramp, pings across a link outage |
 | `plans/multiboard.jig` | both boards and the host computer: pings to 1 and 2, a 200-byte ping through zed-a, both status records, the frame and `routed` counters against what the bus carried, a link outage and recovery, a power cycle of zed-b |
-| `tests/test_zedboard_plugin.py` | the plugin and the board definitions, without Renode: `python -m pytest examples/zedboard/tests` |
+| `tests/test_zedboard_plugin.py` | the plugin and the board file, without Renode: `python -m pytest examples/zedboard/tests` |
 
 <!-- pyml enable md013-->
 <!-- markdownlint-enable MD013 -->
@@ -60,9 +61,9 @@ first-run page runs `multiboard.jig`.
 
 `boards/zedboard.py` registers:
 
-- the housekeeping codec `zed-status`, which each board.yaml names in
-  `csp.housekeeping` with port 10 and the request `01`; `host.hk(a)` and
-  `can0.hk(b)` return the status record below by field name;
+- the housekeeping codec `zed-status`, which the board file names in its
+  `protocol csp(housekeeping: ...)` with port 10 and the request `x"01"`;
+  `host.hk(a)` and `can0.hk(b)` return the status record below by field name;
 - the plan function `cfp_frames(size)`, the CAN frames of a CSP payload of
   `size` bytes: 26 for 200 bytes, 33 for 256;
 - the board member `uptime()`, seconds since boot from the console's `uptime`
@@ -76,8 +77,9 @@ checks.
 
 ### Firmware for the runs
 
-The board definitions load `firmware/build/zed-node-1.elf` and `zed-node-2.elf`,
-the files `firmware/build.py` writes, and Jig doesn't build them: run `build.py`
+The board file loads `firmware/build/zed-node-1.elf` for node 1 and
+`zed-node-2.elf` for node 2, the files `firmware/build.py` writes, and Jig
+doesn't build them: run `build.py`
 once before the plans and again after changing the sources. Without them
 `jig check` reports each ELF as not found, and `jig run` stops before it starts
 Renode, with exit code 2 and one line per missing file under
@@ -92,24 +94,24 @@ jig run examples/zedboard/plans/*.jig --repeat 3 --junit out/zedboard.xml
 ```
 
 A run's fingerprint hashes what it decided and measured in simulated time, so it
-depends on what the firmware does and when. With the ELFs Ubuntu 24.04's GCC
-13.2.1 builds
-(SHA-256 `ef3135ba80723e7c20eca1d6e7ff80128190d06a8573d516cba602e954c6c9e1` for
-`zed-node-1.elf`,
-`208bdc6e566e612e49d5ef14c14fac77f3ddebd8d7d7ba088914bd20969f40b9` for
-`zed-node-2.elf`), each plan gives one fingerprint on Windows and on Linux:
+depends on what the firmware does and when. With the ELFs GCC 12.2 builds
+(Vitis 2024.1 on Windows), each plan gives one fingerprint on Windows:
 
 | Plan | Tests | Simulated | Fingerprint |
 |---|---|---|---|
 | `one_zedboard.jig` | 6 | 4.0 s | `848445d787d95a77` |
-| `two_zedboards.jig` | 5 | 0.6 s | `9b6d46e974fbfced` |
-| `profiles_timelines.jig` | 3 | 23.4 s | `3afb28c2182a55f7` |
-| `multiboard.jig` | 8 | 6.0 s | `32996f04f7e70f0d` |
+| `two_zedboards.jig` | 5 | 0.6 s | `1f561451428c3e06` |
+| `profiles_timelines.jig` | 3 | 23.4 s | `de089b7c1179ef34` |
+| `multiboard.jig` | 8 | 6.0 s | `95c97a90990008c7` |
 
-ELFs from GCC 12.2 (Vitis 2024.1 on Windows) differ from these byte for byte
-(`zed-node-1.elf` has 12928 bytes of text against 12968) and give the same four
-fingerprints: the firmware acts on its 1 ms tick, and the instructions the two
-compilers chose don't move any of its answers to another tick.
+Ubuntu 24.04's GCC 13.2.1 builds ELFs that differ from these byte for byte
+(SHA-256 `ef3135ba80723e7c20eca1d6e7ff80128190d06a8573d516cba602e954c6c9e1` for
+`zed-node-1.elf`, with 12968 bytes of text against GCC 12.2's 12928, and
+`208bdc6e566e612e49d5ef14c14fac77f3ddebd8d7d7ba088914bd20969f40b9` for
+`zed-node-2.elf`). Under Jig 0.1 the two builds gave the same fingerprint for
+each plan, on Windows and on Linux: the firmware acts on its 1 ms tick, and the
+instructions the two compilers chose don't move any of its answers to another
+tick.
 
 ## Nodes
 
@@ -276,23 +278,26 @@ What the firmware does with the hardware:
 
 Without Jig, the boards run in plain Renode 1.17.0 from a checkout of the Jig
 repository: the script compiles Jig's models from `src/jig/models` and builds
-each machine from Jig's Zynq-7000 platform,
-`src/jig/platforms/xilinx/zynq7000.repl`, with `zedboard.repl` on top. From the
-repository root:
+each machine from the platform description Jig writes for the board file,
+which starts from Jig's Zynq-7000 platform,
+`src/jig/platforms/xilinx/zynq7000.repl`. `jig platform` writes those
+descriptions, one per node, into `out/`; from `examples/zedboard`:
 
 ```bash
-python examples/zedboard/firmware/build.py
-renode examples/zedboard/renode/two-boards.resc
+python firmware/build.py
+jig platform zedboard --option node=1 -o out/zedboard-node-1.repl
+jig platform zedboard --option node=2 -o out/zedboard-node-2.repl
+renode renode/two-boards.resc
 ```
 
-`renode/two-boards.resc` creates the machines zed-a and zed-b, each from one
-platform description that names both files (the platform's timers and watchdogs
-can't be built without the clock frequencies `zedboard.repl` gives them, so the
-two files can't load one after the other), and connects both CAN0 controllers to
-one Renode `CANHub`. It boots each board as a JTAG debugger would: the BootROM
-model runs its power-on step, which switches the system watchdog off, and holds
-the core; the script loads the ELF and the core starts at the ELF's entry point.
-Then the emulation starts.
+Each file is what a Jig run loads for the board with that option: the
+platform, the clocks the firmware sets, the JTAG boot straps, the DDR and the
+CPU's speed. `renode/two-boards.resc` creates the machines zed-a and zed-b, one
+from each file, and connects both CAN0 controllers to one Renode `CANHub`. It
+boots each board as a JTAG debugger would: the BootROM model runs its power-on
+step, which switches the system watchdog off, and holds the core; the script
+loads the ELF and the core starts at the ELF's entry point. Then the emulation
+starts.
 
 | TCP port | Connected to |
 |---|---|
@@ -345,9 +350,10 @@ renode -e '$kiss_port=5560; $console_a_port=5561; $console_b_port=5562; include 
 python examples/zedboard/tools/host.py --port 5560
 ```
 
-The other variables are `$zed_a_elf`, `$zed_b_elf`, `$jig_models` and
-`$jig_platforms`; the last two can name the `models` and `platforms` directories
-of an installed `jig` package instead of the checkout's. Windows reserves TCP
+The other variables are `$zed_a_platform`, `$zed_b_platform`, `$zed_a_elf`,
+`$zed_b_elf`, `$jig_models` and `$jig_platforms`; the last two can name the
+`models` and `platforms` directories of an installed `jig` package instead of
+the checkout's. Windows reserves TCP
 port ranges for Hyper-V, and the ranges move between boots:
 `netsh interface ipv4 show excludedportrange protocol=tcp` lists them, and
 Renode reports `Unable to create '0.0.0.0:<port>' socket` for a port inside one.
@@ -401,13 +407,12 @@ on MIO 14 and 15.
 | `firmware/src/` | the C11 sources and `start.S` |
 | `firmware/link.ld` | memory layout: DDR from 0x00100000, mode stacks |
 | `firmware/build.py` | the build script |
-| `zedboard.repl` | the ZedBoard on Jig's Zynq-7000 platform: clocks, JTAG boot straps, DDR |
 | `jig.toml` | the Jig project |
-| `boards/` | the board definitions zed-a and zed-b, and their plugin `zedboard.py` |
+| `boards/` | the board file `zedboard/board.jig` and its plugin `zedboard.py` |
 | `lib/zed.jig` | procedures the plans share |
 | `plans/` | the Jig test plans |
-| `tests/` | tests of the plugin and the board definitions |
-| `renode/two-boards.resc` | both boards, the CAN bus and the sockets, in plain Renode |
+| `tests/` | tests of the plugin and the board file |
+| `renode/two-boards.resc` | both boards, the CAN bus and the sockets, in plain Renode, from the descriptions `jig platform` writes |
 | `tools/host.py` | the stand-alone host computer, standard library only |
 
 <!-- pyml enable md013-->

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Graham Power
-"""Board plugin for the ZedBoard example, shared by zed-a and zed-b.
+"""Board plugin for the ZedBoard example (boards/zedboard/board.jig).
 
 Registers:
 
@@ -24,7 +24,7 @@ import struct
 
 from jig.plugin import BoardHandle, DslError, HkContext, HkDecoder, PluginApi, Record
 
-JIG_PLUGIN_API = 1
+JIG_PLUGIN_API = 2
 
 STATUS = struct.Struct(">IBBBBIIIIIII")  # 36 bytes, big-endian
 STATUS_FIELDS = (

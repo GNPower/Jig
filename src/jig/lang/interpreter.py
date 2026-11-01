@@ -38,6 +38,7 @@ from jig.lang.library import (
     DslError,
     Match,
     NodeDeclaration,
+    NodeLink,
     SystemContext,
 )
 from jig.lang.parser import Module, PlanError, Program, unquote
@@ -53,7 +54,7 @@ from jig.lang.values import (
 from jig.report.report import ABORT_FAILURE, CaseReport, Step, SuiteReport, abort_kind
 from jig.runtime.environment import Profile, as_profile
 from jig.runtime.scheduler import Cancelled, Wait, seconds_to_ns
-from jig.system import boards, registry
+from jig.system import boards, protocols, registry
 from jig.system.boards import Board
 from jig.system.registry import Entry, Member, Owner
 from jig.system.system import Simulation
@@ -261,6 +262,10 @@ class Interpreter:
         self.boards: dict[str, BoardHandle] = self.system.boards
         self.buses: dict[str, BusHandle] = self.system.buses
         self.nodes: dict[str, Any] = self.system.nodes
+        # node -> (its declaration, the layers under it, where it is declared)
+        self._node_specs: dict[str, tuple[NodeDeclaration, tuple[Any, ...], str]] = {}
+        # node -> (the system link it joined, its kind, the boards' links that link joins)
+        self._attachments: dict[str, tuple[str, str, tuple[library.BoardLinkRef, ...]]] = {}
         self.case: CaseReport | None = None
         self._depth = 0
         self._has_call: dict[int, bool] = {}
@@ -316,9 +321,11 @@ class Interpreter:
     # ------------------------------------------------------------- system
 
     def build_system(self) -> list[str]:
-        """Declare the plan's boards, buses and nodes in the simulation (before start).
+        """Declare the plan's boards, nodes and links in the simulation (before start).
 
-        Returns one description line per declaration."""
+        Boards come first, then nodes, then links, whatever their order in the
+        file, so a link can name a node declared below it. Returns one
+        description line per declaration."""
         systems = self.program.main.items("System")
         if len(systems) > 1:
             raise PlanError("a plan declares one system", self.program.location(systems[1]))
@@ -346,23 +353,45 @@ class Interpreter:
         system_scope = Scope(self.globals)
         for name, function in library.system_constructors().items():
             system_scope.declare(name, function)
-        self._declare_node_kinds(system_scope)
-        for declaration in systems[0].declarations:
+        self._declare_system_names(system_scope)
+        phases = {"BoardDeclaration": 0, "NodeDeclaration": 1, "LinkDecl": 2}
+        declarations = sorted(systems[0].declarations, key=lambda d: phases[type(d).__name__])
+        link_lines: list[str] = []
+        for declaration in declarations:
             where = self.program.location(declaration)
             try:
-                self._declare(declaration, system_scope, lines)
+                self._declare(declaration, system_scope, lines, link_lines)
             except (PlanError, DslError, ConfigError) as exc:
                 reason = exc.reason if isinstance(exc, PlanError) else str(exc)
                 raise PlanError(reason, where) from None
-        return lines
+        node_lines = []
+        for name, (spec, layers, where) in self._node_specs.items():
+            if name not in self._attachments:
+                raise PlanError(
+                    f"node {name} joins no link: add it to a system link's members, "
+                    f"such as link ground: uart(members: [<board>.<link>, {name}])",
+                    where,
+                )
+            link_name = self._attachments[name][0]
+            over = "".join(f" over {layer!r}" for layer in layers)
+            node_lines.append(f"node {name}: {spec.describe()}{over} on {link_name}")
+        return [*lines, *link_lines, *node_lines]
 
-    def _declare_node_kinds(self, scope: Scope) -> None:
-        """The node kinds of the extensions and of the boards declared so far."""
+    def _declare_system_names(self, scope: Scope) -> None:
+        """The protocol layers, then the node kinds, of the extensions and of
+        the boards declared so far (a node kind takes the name of a layer it
+        shares one with: ``csp``)."""
         sources = [handle.definition.source for handle in self.boards.values()]
+        for name, kind in protocols.BUILT_IN.items():
+            scope.declare(name, protocols.LayerConstructor(kind))
+        for name, entry in self.registry.protocols_for(sources).items():
+            scope.declare(name, protocols.LayerConstructor(entry.value))
         for name, entry in self.registry.node_kinds_for(sources).items():
             scope.declare(name, entry.value)
 
-    def _declare(self, declaration: Any, scope: Scope, lines: list[str]) -> None:
+    def _declare(
+        self, declaration: Any, scope: Scope, lines: list[str], link_lines: list[str]
+    ) -> None:
         kind = type(declaration).__name__
         name = declaration.name
         if name in self.globals.vars:
@@ -389,55 +418,156 @@ class Interpreter:
                 power=power,
             )
             self._add_board_handle(name, machine, lines)
-            self._declare_node_kinds(scope)
-        elif kind == "BusDeclaration":
-            spec = self._evaluate_now(declaration.value, scope)
-            if not isinstance(spec, BusSpec):
-                raise PlanError(f"a bus is declared with can(...), not {show(spec)}")
-            members = [(ref.machine, ref.name) for ref in spec.members]
-            self.simulation.add_can_bus(name, bitrate=spec.bitrate, members=members)
-            bus = BusHandle(name, spec, self.simulation)
-            self.buses[name] = bus
-            self.globals.declare(name, bus)
-            lines.append(
-                f"bus {name}: CAN {spec.bitrate:g} bit/s, {', '.join(map(repr, spec.members))}"
-            )
+            self._declare_system_names(scope)
+        elif kind == "LinkDecl":
+            link_lines.append(self._declare_link(name, declaration, scope))
         else:
-            spec = self._evaluate_now(declaration.value, scope)
-            if not isinstance(spec, NodeDeclaration):
+            given = value = self._evaluate_now(declaration.value, scope)
+            layers: tuple[Any, ...] = ()
+            if isinstance(value, protocols.Stack):
+                value, layers = value.layers[0], value.layers[1:]
+            if not isinstance(value, NodeDeclaration):
                 kinds = sorted(
                     self.registry.node_kinds_for(
                         handle.definition.source for handle in self.boards.values()
                     )
                 )
                 listed = ", ".join(f"{kind}(...)" for kind in kinds) or "a node kind"
-                raise PlanError(f"a node is declared with {listed}, not {show(spec)}")
-            node = spec.create(name, self.system)
+                raise PlanError(f"a node is declared with {listed}, not {show(given)}")
+            node = value.create(name, self.system)
             self.nodes[name] = node
             self.globals.declare(name, node)
-            lines.append(f"node {name}: {spec.describe()}")
+            self._node_specs[name] = (value, layers, self.program.location(declaration))
 
-    def _board_options(self, board: Board, settings: dict[str, Any]) -> dict[str, str]:
+    def _declare_link(self, name: str, declaration: Any, scope: Scope) -> str:
+        """A system link: the boards' links and the nodes it joins."""
+        if declaration.external:
+            raise PlanError(
+                "external marks a link that leaves a board, in its board file; a system "
+                "link joins boards' external links and nodes"
+            )
+        spec = self._evaluate_now(declaration.value, scope)
+        if not isinstance(spec, library.LinkSpec):
+            raise PlanError(f"a link is declared with uart(...) or can(...), not {show(spec)}")
+        board_links: list[library.BoardLinkRef] = []
+        nodes: list[str] = []
+        for member in spec.members:
+            ref = getattr(member, "ref", None)
+            node = next((n for n, handle in self.nodes.items() if handle is member), None)
+            if isinstance(ref, library.BoardLinkRef):
+                if not ref.external:
+                    raise PlanError(
+                        f"{ref} is a link inside board {ref.machine}: a system link on it "
+                        "would put a probe on it, and probes come in a later release"
+                    )
+                if ref.kind != spec.kind:
+                    raise PlanError(f"link {name} is a {spec.kind} link and {ref} is {ref.kind}")
+                board_links.append(ref)
+            elif node is not None:
+                if node in self._attachments:
+                    joined = self._attachments[node][0]
+                    raise PlanError(f"node {node} joins {joined} already: a node joins one link")
+                nodes.append(node)
+            elif isinstance(member, BusHandle):
+                raise PlanError(
+                    f"{member.name} is a system link: a board's link joins one system link at most"
+                )
+            else:
+                raise PlanError(
+                    f"link {name}: members are boards' external links and nodes, not {show(member)}"
+                )
+        if spec.kind not in protocols.LINK_GIVES:
+            raise PlanError(
+                f"a system joins UART and CAN links; a {spec.kind} link in a system would be "
+                "a probe, and probes come in a later release"
+            )
+        if not board_links:
+            raise PlanError(f"link {name} joins no board's link")
+        if spec.kind == "uart" and len(board_links) > 1:
+            listed = ", ".join(map(repr, board_links))
+            raise PlanError(
+                f"link {name} joins the UARTs of two boards ({listed}): links between boards' "
+                "UARTs come in a later release"
+            )
+        for node in nodes:
+            value, layers, _where = self._node_specs[node]
+            provided = protocols.check(
+                [layer.name for layer in layers], protocols.LINK_GIVES[spec.kind], f"link {name}"
+            )
+            below = layers[0].name if layers else f"link {name}"
+            protocols.fits(value.runs_on, provided, below, f"node {node}")
+        rate_key = "baud" if spec.kind == "uart" else "bitrate"
+        rate = self._link_rate(name, rate_key, spec.settings.get(rate_key), board_links)
+        members = [*map(repr, board_links), *nodes]
+        for node in nodes:
+            self._attachments[node] = (name, spec.kind, tuple(board_links))
+        if spec.kind == "uart":
+            (ref,) = board_links
+            handle: Any = self.boards[ref.machine].link(ref.name)
+            self.globals.declare(name, handle)
+            stated = f" {_rate(rate_key, rate)}" if rate else ""
+            return f"link {name}: UART{stated}, {', '.join(members)}"
+        bitrate = float(rate or 1_000_000)
+        self.simulation.add_can_bus(
+            name, bitrate=bitrate, members=[(ref.machine, ref.name) for ref in board_links]
+        )
+        bus = BusHandle(name, BusSpec(bitrate, board_links), self.simulation)
+        self.buses[name] = bus
+        self.globals.declare(name, bus)
+        for ref in board_links:
+            self.boards[ref.machine].attach_link(ref.name, bus)
+        return f"link {name}: CAN {_rate(rate_key, bitrate)}, {', '.join(members)}"
+
+    def _link_rate(
+        self, name: str, key: str, stated: Any, members: list[library.BoardLinkRef]
+    ) -> float | None:
+        """The rate the boards' links state (baud, bitrate); a system link that
+        states one must agree with them."""
+        rates = {}
+        for ref in members:
+            value = self.boards[ref.machine].definition.interface(ref.name).settings.get(key)
+            if value is not None:
+                rates[repr(ref)] = float(value)
+        if len(set(rates.values())) > 1:
+            listed = ", ".join(f"{ref} {_rate(key, value)}" for ref, value in rates.items())
+            raise PlanError(f"link {name}: the boards' links disagree on {key} ({listed})")
+        found = next(iter(rates.values()), None)
+        if stated is not None:
+            if not isinstance(stated, (int, float)) or isinstance(stated, bool) or stated <= 0:
+                raise PlanError(f"link {name}: {key} is a positive number, not {show(stated)}")
+            if found is not None and float(stated) != found:
+                raise PlanError(
+                    f"link {name} states {_rate(key, float(stated))} and the boards' links "
+                    f"{_rate(key, found)}: rates come from the boards' links"
+                )
+            return float(stated)
+        return found
+
+    def _board_options(self, board: Board, settings: dict[str, Any]) -> dict[str, Any]:
         """A board's option values: the project's defaults, then the plan's
-        settings, then the run's."""
+        settings, then the run's (``--option``)."""
         unknown = set(settings) - set(board.options)
         if unknown:
             allowed = ", ".join(["boot", "mips", "storage", "power", *board.options])
             raise PlanError(
                 f"board {board.name} has no setting {', '.join(sorted(unknown))} (has: {allowed})"
             )
-        chosen = {
+        chosen: dict[str, Any] = {
             name: value
             for name, value in project.current().default_options.items()
             if name in board.options
         }
-        chosen.update({name: str(value) for name, value in settings.items()})
+        chosen.update(settings)
         for name, value in self.options.board_options.items():
             if name in board.options:
                 chosen[name] = value
         return chosen
 
     def _add_board_handle(self, name: str, machine: Any, lines: list[str]) -> None:
+        members = self.registry.member_names("board", [machine.board.source])
+        collisions = library.name_collisions(machine.board, members)
+        if collisions:
+            raise PlanError(collisions[0])
         handle = BoardHandle(machine)
         self.boards[name] = handle
         self.globals.declare(name, handle)
@@ -460,12 +590,21 @@ class Interpreter:
         self._owners.setdefault(name, owner)
 
     def start_system(self) -> None:
-        """Start the simulation and the plan's nodes."""
+        """Start the simulation, then each node on the port of the link it joined."""
         self.simulation.start()
-        for handle in self.nodes.values():
+        for name, handle in self.nodes.items():
             start = getattr(handle, "start", None)
-            if start is not None:
-                start(self.system)
+            if start is None:
+                continue
+            link_name, kind, board_links = self._attachments[name]
+            port: Any
+            if kind == "uart":
+                (ref,) = board_links
+                port = self.simulation.machines[ref.machine].port(ref.name)
+            else:
+                port = self.system.can_bus(link_name)
+            _spec, layers, _where = self._node_specs[name]
+            start(self.system, NodeLink(link_name, kind, port, layers, board_links))
 
     # ---------------------------------------------------------------- run
 
@@ -998,6 +1137,8 @@ class Interpreter:
     async def _condition(self, node: Any, scope: Scope) -> tuple[Any, str]:
         """A condition's value and, for a single comparison, both sides."""
         inner = node
+        if type(inner).__name__ == "Stack" and len(inner.layers) == 1:
+            inner = inner.layers[0]
         while type(inner).__name__ in ("Or", "And") and len(inner.operands) == 1:
             inner = inner.operands[0]
         if type(inner).__name__ == "Not" and not inner.negated:
@@ -1012,6 +1153,17 @@ class Interpreter:
 
     async def _e_TemplateExpr(self, node: Any, scope: Scope) -> Any:
         return await self.evaluate(node.expr, scope)
+
+    async def _e_Stack(self, node: Any, scope: Scope) -> Any:
+        if len(node.layers) == 1:
+            return await self.evaluate(node.layers[0], scope)
+        from jig.system import protocols
+
+        layers = [await self.evaluate(layer, scope) for layer in node.layers]
+        try:
+            return protocols.stack_of(layers)
+        except ConfigError as exc:
+            raise PlanError(str(exc)) from None
 
     async def _e_Or(self, node: Any, scope: Scope) -> Any:
         value = None
@@ -1250,6 +1402,12 @@ class Interpreter:
             return value[index]
         if isinstance(value, Match):
             return value[index]
+        indexed = getattr(value, "dsl_index", None)
+        if indexed is not None:
+            try:
+                return indexed(index)
+            except ConfigError as exc:
+                raise PlanError(str(exc)) from None
         raise PlanError(f"cannot index {type_name(value)}")
 
     async def _call(
@@ -1360,9 +1518,15 @@ class Interpreter:
         return [await self.evaluate(item, scope) for item in node.items]
 
     async def _e_Map(self, node: Any, scope: Scope) -> Any:
-        result: dict[str, Any] = {}
+        result: dict[str | int, Any] = {}
         for entry in node.entries:
-            key = entry.key if entry.key else unquote(entry.quoted.value)
+            key: str | int
+            if entry.key:
+                key = entry.key
+            elif entry.quoted is not None:
+                key = unquote(entry.quoted.value)
+            else:
+                key = int(parse_quantity(entry.number.value))
             result[key] = await self.evaluate(entry.value, scope)
         return result
 
@@ -1475,6 +1639,18 @@ def _power_setting(value: Any) -> str | None:
     raise PlanError(f'power is "on" or "off", not {show(value)}')
 
 
+def _rate(key: str, value: float) -> str:
+    """A link's rate as system lines and link errors write it: a UART's
+    ``baud`` in whole bauds (``2000000 baud``), a CAN ``bitrate`` in the
+    largest unit it reaches (``1 Mbit/s``, ``500 kbit/s``)."""
+    if key == "baud":
+        return f"{int(value)} baud" if float(value).is_integer() else f"{value:g} baud"
+    for unit, scale in (("Mbit/s", 1e6), ("kbit/s", 1e3)):
+        if value >= scale:
+            return f"{value / scale:g} {unit}"
+    return f"{value:g} bit/s"
+
+
 def _wrap_result(value: Any) -> Any:
     if isinstance(value, re.Match):
         return Match(value)
@@ -1484,7 +1660,7 @@ def _wrap_result(value: Any) -> Any:
         hasattr(value, "__dataclass_fields__")
         and not isinstance(value, type)
         and not hasattr(type(value), "dsl_members")
-        and not isinstance(value, (BusSpec, NodeDeclaration))
+        and not isinstance(value, (BusSpec, NodeDeclaration, library.LinkSpec, protocols.Stack))
     ):
         return record_of(value)
     return value

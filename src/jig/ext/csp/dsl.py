@@ -1,15 +1,18 @@
 """The CSP extension's plan members.
 
-* ``csp(address, link | bus, ...)`` declares a harness node in a system:
-  ``node gs: csp(address: 10, link: dut.kiss)``. RDP options given here
-  override the target board's ``csp.rdp``, which overrides libcsp's defaults.
+* ``csp(address, ...)`` declares a harness node in a system, with the
+  layer under it: ``node gs: csp(address: 10) over kiss`` on a UART link,
+  ``over cfp`` on a CAN link. The node joins a system link as one of its
+  members (``link ground: uart(members: [dut.kiss, gs])``). RDP options
+  given here override the target board's ``csp(rdp: ...)``, which overrides
+  libcsp's defaults.
 * A node (``NodeHandle``) pings, sends requests, opens connections, sends and
   receives connectionless packets with explicit ports and priority, asks CMP
   (``ident``, ``route_set``, ``clock``) and asks for housekeeping
   (``hk``, ``hk_published``), decoded with the target board's codec.
 * A bus gets ``packets``, ``traffic`` and ``hk``: what the CSP bus observer
   saw on it, whoever sent it.
-* A board gets ``address``, its ``csp.address``.
+* A board gets ``address``, the address of its ``protocol csp(...)``.
 """
 
 from __future__ import annotations
@@ -28,9 +31,10 @@ from jig.lang.library import (
     BackgroundHandle,
     BoardHandle,
     BusHandle,
+    DeviceHandle,
     DslError,
-    InterfaceRef,
     NodeDeclaration,
+    NodeLink,
     SystemContext,
     as_bytes,
     as_seconds,
@@ -62,10 +66,12 @@ def settings_of(board: BoardHandle) -> CspSettings:
 
 
 def csp_address(board: BoardHandle) -> int:
-    """The board's ``csp.address``."""
+    """The address of the board's ``protocol csp(...)``."""
     address = settings_of(board).address
     if address is None:
-        raise ConfigError(f"board {board.definition.name} declares no CSP address (csp.address)")
+        raise ConfigError(
+            f"board {board.definition.name} declares no CSP address (protocol csp(address: ...))"
+        )
     return address
 
 
@@ -76,7 +82,7 @@ def housekeeping_of(board: BoardHandle | None, address: int) -> Housekeeping:
     if spec is None:
         raise DslError(
             f"no housekeeping for {board.name}: board {board.definition.name} "
-            "declares no csp.housekeeping"
+            "declares no CSP housekeeping (protocol csp(housekeeping: {...}))"
         )
     return spec
 
@@ -104,7 +110,7 @@ def decoder_for(board: BoardHandle, spec: Housekeeping) -> HkDecoder:
 
 
 def rdp_options(board: BoardHandle | None, overrides: dict[str, Any]) -> RdpOptions:
-    """libcsp's defaults, then the board's csp.rdp, then the node's own options."""
+    """libcsp's defaults, then the board's csp(rdp: ...), then the node's own options."""
     board_options = dict(settings_of(board).rdp) if board is not None else {}
     return replace(RdpOptions(), **{**board_options, **overrides})
 
@@ -141,17 +147,15 @@ class ConnectionHandle:
 
 @dataclass
 class CspDeclaration(NodeDeclaration):
-    """``csp(...)`` in a system declaration."""
+    """``csp(...)`` in a system declaration: a node that needs packets, so
+    ``kiss`` (on a UART link) or ``cfp`` (on a CAN link) goes under it."""
 
     address: int
-    link: InterfaceRef | None = None
-    bus: str | None = None
     rdp: dict[str, Any] = field(default_factory=dict)  # RdpOptions fields the plan set
     broadcast: bool = False
 
     def describe(self) -> str:
-        where = f"link {self.link!r}" if self.link else f"bus {self.bus}"
-        return f"CSP {self.address} on {where}"
+        return f"CSP {self.address}"
 
     def create(self, name: str, system: SystemContext) -> NodeHandle:
         return NodeHandle(name, self, system)
@@ -188,16 +192,19 @@ class NodeHandle:
         self._spec = spec
         self._system = system
         self._node: CspNode | None = None
+        self._link: NodeLink | None = None
         self._decoders: dict[int, HkDecoder] = {}
 
     def __repr__(self) -> str:
         return f"<node {self._name} ({self._spec.address})>"
 
-    def start(self, system: SystemContext) -> None:
-        """Attach the node to its link or bus (the simulation has started)."""
+    def start(self, system: SystemContext, link: NodeLink) -> None:
+        """Run on the link the node joined (the simulation has started): KISS
+        frames on a UART link, CFP on a CAN link."""
+        self._link = link
         spec = self._spec
-        kiss = system.uart(spec.link) if spec.link is not None else None
-        can = system.can_bus(spec.bus) if spec.bus is not None else None
+        kiss = link.port if link.kind == "uart" else None
+        can = link.port if link.kind == "can" else None
         node = CspNode(
             self._name,
             spec.address,
@@ -217,7 +224,7 @@ class NodeHandle:
         self._node = node
 
     def rdp_options_for(self, address: int) -> RdpOptions:
-        """libcsp's RDP defaults, then the ``csp.rdp`` of the board at
+        """libcsp's RDP defaults, then the ``csp(rdp: ...)`` of the board at
         ``address``, then the options this node's declaration sets."""
         return rdp_options(self.target(address)[1], self._spec.rdp)
 
@@ -226,6 +233,15 @@ class NodeHandle:
         if self._node is None:
             raise DslError(f"node {self._name} is not running yet")
         return self._node
+
+    @property
+    def link(self) -> NodeLink:
+        """The link the node joined, as Jig handed it to ``start``: the
+        system link's ``name`` and ``kind``, the harness's ``port`` on it,
+        the ``layers`` under the node and the ``board_links`` it joins."""
+        if self._link is None:
+            raise DslError(f"node {self._name} is not running yet")
+        return self._link
 
     @property
     def spec(self) -> CspDeclaration:
@@ -281,7 +297,10 @@ class NodeHandle:
         ]
 
     def target(self, target: Any) -> tuple[int, BoardHandle | None]:
-        """A board or a CSP address, as (address, the board at that address or None)."""
+        """A board, one of its devices or a CSP address, as (address, the
+        board at that address or None)."""
+        if isinstance(target, DeviceHandle):
+            target = target.board
         if isinstance(target, BoardHandle):
             return csp_address(target), target
         if isinstance(target, int) and not isinstance(target, bool):
@@ -289,7 +308,7 @@ class NodeHandle:
                 if settings_of(board).address == target:
                     return target, board
             return target, None
-        raise DslError(f"a CSP target is a board or an address, not {type_name(target)}")
+        raise DslError(f"a CSP target is a board, a device or an address, not {type_name(target)}")
 
     async def ping(
         self, target: Any, payload: Any = None, size: int = 10, timeout: float = 2.0
@@ -480,8 +499,6 @@ class NodeHandle:
 
 def csp_node(
     address: int,
-    link: Any = None,
-    bus: Any = None,
     window: Any = None,
     conn_timeout: Any = None,
     packet_timeout: Any = None,
@@ -489,15 +506,19 @@ def csp_node(
     delayed_acks: Any = None,
     ack_delay_count: Any = None,
     broadcast: bool = False,
+    link: Any = None,
+    bus: Any = None,
 ) -> CspDeclaration:
-    """``node gs: csp(address: 10, link: dut.kiss)``: a harness CSP node on a
-    board's KISS UART or on a CAN bus."""
-    if (link is None) == (bus is None):
-        raise DslError("csp(): give exactly one of link (a board's KISS UART) or bus")
-    if link is not None and (not isinstance(link, InterfaceRef) or link.kind != "uart"):
-        raise DslError(f"csp(): link is a UART interface of a board, not {show(link)}")
-    if bus is not None and not isinstance(bus, BusHandle):
-        raise DslError(f"csp(): bus is a declared bus, not {show(bus)}")
+    """``node gs: csp(address: 10) over kiss``: a harness CSP node, which
+    joins a UART link (``over kiss``) or a CAN link (``over cfp``) as one of
+    its members."""
+    if link is not None or bus is not None:
+        given = "link" if link is not None else "bus"
+        raise DslError(
+            f"csp(): {given} is gone; a node joins a system link instead: "
+            "node gs: csp(address: 10) over kiss, then "
+            "link ground: uart(members: [dut.kiss, gs])"
+        )
     if not isinstance(address, int) or isinstance(address, bool) or not 0 <= address <= 31:
         raise DslError(f"csp(): address must be 0-31, not {show(address)}")
     rdp: dict[str, Any] = {}
@@ -513,13 +534,7 @@ def csp_node(
         rdp["delayed_acks"] = bool(delayed_acks)
     if ack_delay_count is not None:
         rdp["ack_delay_count"] = int(ack_delay_count)
-    return CspDeclaration(
-        int(address),
-        link,
-        bus.name if bus is not None else None,
-        rdp,
-        bool(broadcast),
-    )
+    return CspDeclaration(int(address), rdp, bool(broadcast))
 
 
 # ------------------------------------------------------------------ buses

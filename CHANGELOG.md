@@ -9,6 +9,145 @@ Breaking changes open with **Breaking** under Changed.
 
 ## [Unreleased]
 
+### Added
+
+- Board files, `boards/<name>/board.jig`, in the Jig language: settings
+  (`description`, `root`, `models`, `plugin`, `rtc`, `storage`,
+  `backup_supply`, `power`, `repl`), options declared with `choice(...)` or
+  a plain value, the device with its family's arguments and its body
+  (firmware, boot modes, protocol instances, interface stacks, `ip` lines,
+  `unmodelled` ranges, property assignments, monitor commands, a driver),
+  peripherals, links (`uart`, `can`, `spi`, `qspi`, `i2c`, `gpio`;
+  `external` for one that leaves the board) and sensors. `if`, `elif` and
+  `else` pick declarations by option values, strings see the options and
+  `workdir`, and declarations can name what is declared below them.
+- Jig writes each machine's Renode platform description from its board
+  file, to `machine.repl` in the machine's run directory: the family's
+  platform, the Zynq-7000 PS clocks from an XSA's `ps7_init` or from the
+  `clocks` argument, boot straps, DDR, peripherals at their controllers,
+  GPIO links and pulls, sensor inputs, `ip` lines with their `IRQ_F2P`
+  interrupts, unmodelled ranges as silent tags, property assignments,
+  `repl` fragments and the per-run overlay. A peripheral's monitor
+  commands go into one `init add:` block. `jig platform BOARD [--option
+  NAME=VALUE] [-o FILE]` prints it.
+- The programmable logic of a Zynq-7000 comes from the block design in its
+  XSA (`jig.ext.zynq7000.blockdesign`): a model for each AXI GPIO, AXI Quad
+  SPI, AXI CDMA and AXI BRAM controller under its block-design name and at
+  its address, interrupts traced through `xlconcat` blocks to `IRQ_F2P`,
+  reset domains, AXI GPIO inputs driven by the FCLK resets, the Quad SPI's
+  SCK from `C_SCK_RATIO` and the CDMA's reachable ranges from its address
+  map. IP without a model becomes a silent tag. `ip` lines replace an
+  instance's model or place a model behind ports the design exports; a
+  device without a block design places them by address range. The
+  design's instances and exported ports are names of the device: an AXI
+  Quad SPI is an SPI link's controller (`zynq.axi_quad_spi_0`), and an `ip`
+  line's property can name a block RAM (`bram: axi_bram_ctrl_0`). The user
+  manual's programmable-logic page describes it.
+- Protocol layers `kiss`, `cfp`, `csp`, `vt100` and `cli`, stacked with
+  `over` in a device's `interface` lines and a node's declaration. A stack
+  whose layers don't fit is an error that names the missing layer: "csp
+  needs packets and uart0 gives a byte stream: put kiss between them".
+  Plugins add layers with `api.protocol`.
+- The `vt100` layer renders what a board writes as a 24-row terminal shows
+  it (`jig.transports.terminal`): cursor moves, saved positions, inserted,
+  deleted and erased characters and erased lines take effect, and colors
+  and other sequences drop out, so a console whose stack has `vt100`
+  matches `expect`, `seen` and `cli` against the text a person at a
+  terminal reads, and `cli(prompt: ...)` waits for the prompt on the
+  cursor's line. Such a console adds `press(key)`, which sends one of 40
+  named keys (the four arrows, `home`, `end`, `insert`, `delete`,
+  `page_up`, `page_down`, `tab`, `enter`, `backspace`, `escape`, and
+  `ctrl-a` to `ctrl-z`), `raw`, the bytes as the board sent them, and
+  `raw_buffer`, the bytes since the last `clear()`, which keep the lines
+  a terminal overwrites.
+- The STM32 family's part table: `part` picks Renode's STM32F4 platform
+  (with the F407's 128 KiB of SRAM1 and SRAM2, and the stock file's own
+  tags in place of the SVD file its init downloads) or Jig's STM32U575 and
+  STM32U595 platforms; `platform` takes another part's description; the
+  core's name comes from the platform; `clock` sets the SysTick frequency
+  on an STM32F407 and the DWT cycle counter's on an STM32U5.
+- Sensors on a device's own converter (`mcu.adc4.channel[13]`), with a
+  starting voltage (`= 736 mV`); a Renode STM32 converter gets an
+  `Analog.ADCChannelSource`, and `set_sensor` returns `none` for it.
+- `cli(prompt: ...)` in a stack: `board.cli` returns when the prompt comes
+  back instead of after `settle` seconds of quiet.
+- Map literals take integer keys, which stay numbers: `{0: flash0}`,
+  `{0x68: rtc0}`.
+- Board handles reach the board's devices (`a.zynq`: `name`, `family`,
+  `monitor`), peripherals (`a.flash0`: `name`, `model`) and links by name.
+  A CSP target can be a device.
+- `jig check` checks the device's arguments, each protocol stack, names
+  that clash with board members, and that the platform description can be
+  written; it takes `--option NAME=VALUE`. `jig boards` prints each
+  board's description and options.
+- For plugins, a CSP node's handle keeps the link it joined as
+  `node.link`: the system link's name and kind, the harness's port on it,
+  the layers under the node and `board_links`, a `BoardLinkRef` for each
+  board's link the system link joins, with the machine, the link's name
+  and the device interfaces it joins (`interfaces`).
+- `jig.testing`: the CAN links of a `FakeSimulation` are `FakeCanPort`s,
+  which acknowledge the frames harness nodes write, keep them in `written`
+  and hand them to the link's bus observers and nodes, so a plugin test
+  runs a CSP node over `cfp` without Renode.
+
+### Changed
+
+- **Breaking**: board.yaml is gone. Jig reads board files only, and no
+  converter is provided; the board-files page of the user manual maps each
+  board.yaml schema 2 key to its new place.
+- **Breaking**: the plan language is grammar version 3, and `over` is a
+  reserved word.
+- **Breaking**: a system declares `link` where it declared `bus`:
+  `link can0: can(members: [a.can, b.can])`. A system link joins boards'
+  external links and nodes; its rate comes from the boards' links, and a
+  rate it states must agree with them. A link inside a board, or a UART
+  link between two boards, is refused in this release.
+- **Breaking**: a node declares the layers under it and joins a link:
+  `node host: csp(address: 10) over kiss` with
+  `link ground: uart(members: [a.kiss, host])` replaces
+  `csp(address: 10, link: a.kiss)`, and `over cfp` on a CAN link replaces
+  `bus:`. A node that joins no link is an error.
+- **Breaking**: CSP settings belong to the device,
+  `protocol csp(address: 5, housekeeping: {...}, rdp: {...})`, in place of
+  board.yaml's `csp` section; RDP times take units and lose their `_ms`
+  suffixes (`ack_timeout: 100 ms`).
+- **Breaking**: `board.console` is the board's external link named
+  `console`, and `board.cli`, `board.send` and `board.expect` use the one
+  external UART link whose interface's stack has `cli`, ending lines with
+  that layer's `eol`. `board.interface(name)` is gone: plans name a link
+  as `board.kiss`.
+- **Breaking**: a power cycle restarts every peripheral whose model
+  implements `IPowerCycled`, which Jig finds in the machine at run time,
+  except those in `backup_supply`; board.yaml's `power.restart` list is
+  gone.
+- **Breaking**: `jig check` no longer compares hand-written clocks with a
+  design's `ps7_init`, since Jig writes the clocks.
+- **Breaking**: plugin API version 2 (`JIG_PLUGIN_API = 2`).
+  `api.soc_driver` is now `api.device_family`. Node kinds lose their
+  `link` and `bus` arguments: when the system starts, Jig calls the node
+  handle's `start(system, link)` with the link the node joined. A board
+  member can't be called `console`.
+- **Breaking**: device families register under the `jig.device_families`
+  entry-point group, which replaces `jig.socs`. A family's driver writes
+  its part of the platform description (`platform_lines`) and checks the
+  device's arguments (`arguments`); `jig.system.socs` lists the optional
+  methods.
+- **Breaking**: for plugins and drivers, `Board` keeps its fields for the
+  board's one device, except `platform`, `clocks` and `soc_platform`, which
+  are gone; `options` holds `OptionSpec` values, and option values keep
+  their types. `MachineConfig.choices()` is gone.
+- **Breaking**: the ZedBoard example has one board, `zedboard`, with
+  `option node` choosing the firmware, in place of `zed-a` and `zed-b`.
+  `zedboard.repl` is gone: `renode/two-boards.resc` loads the descriptions
+  `jig platform` writes. The fingerprints of `two_zedboards.jig`,
+  `profiles_timelines.jig` and `multiboard.jig` changed, because `booted`
+  in `lib/zed.jig` matched the boot banner against the board's name and
+  now matches the address alone; every other step is unchanged.
+- Run reports write a CAN link's bit rate with its unit and a UART link's
+  baud rate in whole bauds: `link can0: CAN 1 Mbit/s` where 0.1.0a2 wrote
+  `bus can0: CAN 1e+06 bit/s`, and `UART 2000000 baud`. Errors about a
+  link's rate write them the same way.
+
 ## [0.1.0a2] - 2026-10-14
 
 ### Changed

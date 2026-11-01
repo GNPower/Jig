@@ -1,0 +1,28 @@
+# A Zynq-7000 node with no hardware design (no XSA, no ps7_init, no
+# bitstream): its firmware sets up the clocks it uses. It brings a plugin (a
+# file with a sibling module), C# models and a plan library, answers
+# housekeeping through the example-status codec, and starts powered off.
+board "example-node" {
+    description: "Zynq-7000 test fixture with a plugin, models and a plan library"
+    root: "../.."
+    models: ["models/*.cs"]
+    plugin: "plugin.py"
+    power: "off"
+
+    device zynq: zynq7000(part: "XC7Z020-CLG484", straps: "jtag",
+                          clocks: {cpu_3x2x: 333.333333 MHz, cpu_1x: 111.111111 MHz,
+                                   uart_ref: 50 MHz}) {
+        firmware: {app: "build/node.elf"}
+        boot jtag
+        protocol csp(address: 1, rdp: {ack_timeout: 100 ms},
+                     housekeeping: {port: 10, request: x"01", codec: "example-status",
+                                    label: "status"})
+        interface uart1: cli(eol: "\r\n")
+        interface uart0: csp over kiss
+        interface can0: csp over cfp
+    }
+
+    external link console: uart(baud: 115200, members: [zynq.uart1])
+    external link kiss: uart(baud: 115200, members: [zynq.uart0])
+    external link can: can(bitrate: 1 Mbit/s, members: [zynq.can0])
+}

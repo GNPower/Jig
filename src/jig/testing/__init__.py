@@ -8,9 +8,10 @@
 * ``FakeSimulation``, ``FakeMachine`` and ``run_source``: run a plan on
   simulated time alone. A system declaration builds fake machines from real
   board definitions (their plugins load, their members and codecs work); a
-  board's UART reaches a test's ``FakeBoard`` through ``uarts``, a CAN bus is
-  a port tests feed frames into, and ``on_board`` scripts a machine's
-  ``FakeConsole`` once the plan declares it.
+  board's UART reaches a test's ``FakeBoard`` through ``uarts``, a CAN link
+  is a ``FakeCanPort`` that keeps and acknowledges the frames harness nodes
+  write and takes the frames a test feeds it, and ``on_board`` scripts a
+  machine's ``FakeConsole`` once the plan declares it.
 
 For example::
 
@@ -42,7 +43,8 @@ from jig.system import boards, registry
 from jig.system.boards import Board
 from jig.system.socs import MachineConfig, SocDriver, driver_for
 from jig.system.system import BusContext, Event
-from jig.transports.can import CanBusPort
+from jig.transports.can import CanBusPort, CanFrame
+from jig.transports.terminal import Terminal, encode_key
 
 T = TypeVar("T")
 
@@ -203,28 +205,61 @@ class FakeBoard:
 class FakeConsole:
     """A board's console as a test scripts it: ``feed`` makes text arrive now,
     ``replies`` maps a command line to what the board prints when it gets it,
-    and ``sent`` lists every line the plan sent. Waits run on the simulation's
-    scheduler, as on a real console."""
+    ``sent`` lists every line the plan sent and ``pressed`` every key it
+    pressed. Waits run on the simulation's scheduler, as on a real console.
 
-    def __init__(self, simulation: FakeSimulation, label: str) -> None:
+    With ``terminal`` (a link whose stack has ``vt100``), what a test feeds
+    is rendered as a terminal shows it, as in a run: ``text`` and ``buffer``
+    are the rendered text, ``raw`` the bytes fed and ``raw_buffer`` those
+    fed since the last ``clear()``."""
+
+    def __init__(self, simulation: FakeSimulation, label: str, *, terminal: bool = False) -> None:
         self._simulation = simulation
         self.label = label
-        self.buffer = ""
-        self.text = ""
         self.eol = "\r"
         self.sent: list[str] = []
+        self.pressed: list[str] = []
         self.replies: dict[str, str] = {}
+        self.raw = b""  # everything fed, as Latin-1 bytes
+        self._raw_start = 0  # raw[:_raw_start] came before the last clear()
+        self._buffer = ""
+        self._text = ""
+        self._terminal = Terminal() if terminal else None
         self._last_data_ns = 0
 
+    @property
+    def text(self) -> str:
+        return self._text if self._terminal is None else self._terminal.text
+
+    @property
+    def buffer(self) -> str:
+        return self._buffer if self._terminal is None else self._terminal.since_mark
+
+    @property
+    def raw_buffer(self) -> bytes:
+        return self.raw[self._raw_start :]
+
     def feed(self, text: str) -> None:
-        self.buffer += text
-        self.text += text
+        data = text.encode("latin-1", errors="replace")
+        self.raw += data
+        if self._terminal is not None:
+            self._terminal.feed(data)
+        self._buffer += text
+        self._text += text
         self._last_data_ns = self._simulation.now_ns
 
     def clear(self) -> None:
-        self.buffer = ""
+        self._buffer = ""
+        self._raw_start = len(self.raw)
+        if self._terminal is not None:
+            self._terminal.mark()
 
     def write(self, text: str) -> None:
+        self._last_data_ns = self._simulation.now_ns
+
+    def press(self, key: str) -> None:
+        encode_key(key)  # an unknown name raises ValueError, as on a real console
+        self.pressed.append(key)
         self._last_data_ns = self._simulation.now_ns
 
     def send_line(self, line: str, terminator: str | None = None) -> None:
@@ -294,14 +329,17 @@ class FakeMachine:
     def console(self) -> FakeConsole:
         return self.console_on("console")
 
-    def console_on(self, interface: str) -> FakeConsole:
-        if interface not in self.consoles:
-            if self.board.interface(interface).kind != "uart":
-                raise ConfigError(f"{self.name}: no UART interface {interface!r}")
-            console = FakeConsole(self.simulation, f"{self.name}.{interface}")
-            console.eol = self.board.interface(interface).eol
-            self.consoles[interface] = console
-        return self.consoles[interface]
+    def console_on(self, link: str) -> FakeConsole:
+        if link not in self.consoles:
+            interface = self.board.interface(link)
+            if interface.kind != "uart":
+                raise ConfigError(f"{self.name}: no external UART link {link!r}")
+            console = FakeConsole(
+                self.simulation, f"{self.name}.{link}", terminal="vt100" in interface.stack
+            )
+            console.eol = interface.eol
+            self.consoles[link] = console
+        return self.consoles[link]
 
     def port(self, interface: str) -> Any:
         found = self.simulation.uarts.get((self.name, interface))
@@ -350,6 +388,73 @@ class FakeMachine:
         self.simulation.emit(self.name, "boot", self.config.boot)
 
 
+class FakeCanPort(CanBusPort):
+    """The harness's adapter on a fake CAN link (``FakeSimulation.can_buses``).
+
+    A stand-in for Renode's CAN bus answers the port's monitor commands: it
+    acknowledges every frame a harness node writes and keeps it in
+    ``written``, stamped with the simulated time of the write and sent by
+    ``harness``. At the next scheduler service the port hands those frames
+    to the link's listeners, its bus observers and the nodes on it, as a
+    run's bus hands back the harness's own frames. ``acknowledging`` is what
+    the plan last set with ``acknowledge(...)``. ``feed`` makes frames from
+    a board arrive."""
+
+    def __init__(self, scheduler: Scheduler, name: str) -> None:
+        super().__init__(_FakeCanBus(self), name)  # type: ignore[arg-type]
+        self.written: list[CanFrame] = []
+        self.acknowledging = True
+        self._scheduler = scheduler
+        self._unheard: list[CanFrame] = []  # written, not yet handed to the listeners
+        scheduler.add_service(self._hand_back)
+
+    def _wrote(self, frame_id: int, data: bytes, *, extended: bool, remote: bool) -> None:
+        stamp_us = self._scheduler.now_ns // 1000
+        frame = CanFrame(frame_id, data, extended, remote, stamp_us, "harness")
+        self.written.append(frame)
+        self._unheard.append(frame)
+
+    def _hand_back(self) -> None:
+        if self._unheard:
+            frames, self._unheard = self._unheard, []
+            self.feed(frames)
+
+
+class _FakeCanBus:
+    """Renode's side of a fake CAN link: the monitor commands a
+    ``CanBusPort`` sends (``Write``, ``WriteFrames``, ``HarnessAcknowledges``),
+    answered as the bus answers them when a node acknowledges."""
+
+    def __init__(self, port: FakeCanPort) -> None:
+        self._port = port
+
+    def execute(self, command: str) -> str:
+        _bus, verb, arguments = command.split(" ", 2)
+        if verb == "HarnessAcknowledges":
+            self._port.acknowledging = arguments == "true"
+            return ""
+        if verb == "Write":
+            frame_id, data, extended, remote = arguments.split(" ")
+            self._port._wrote(
+                int(frame_id, 0),
+                bytes.fromhex(data.strip('"')),
+                extended=extended == "true",
+                remote=remote == "true",
+            )
+            return "ack"
+        if verb == "WriteFrames":
+            for entry in arguments.strip('"').split():
+                frame_id, flags, data = entry.split(":")
+                self._port._wrote(
+                    int(frame_id, 16),
+                    bytes.fromhex(data),
+                    extended="E" in flags,
+                    remote="R" in flags,
+                )
+            return "ack"
+        raise ConfigError(f"a fake CAN link answers no monitor command {command!r}")
+
+
 class FakeSimulation:
     """The parts of a Simulation the interpreter uses, on simulated time alone."""
 
@@ -365,7 +470,7 @@ class FakeSimulation:
         # (script its console, say).
         self.on_board: dict[str, Callable[[FakeMachine], None]] = {}
         self.uarts: dict[tuple[str, str], Any] = {}  # (machine, interface) -> port
-        self.can_buses: dict[str, CanBusPort] = {}
+        self.can_buses: dict[str, FakeCanPort] = {}
         self.bus_observers: dict[str, dict[str, Any]] = {}
         self.recorded: dict[str, list[list[Any]]] = {}  # tables bus observers wrote
         self._buses: dict[str, list[tuple[str, str]]] = {}
@@ -402,12 +507,17 @@ class FakeSimulation:
         boot: str | None = None,
         performance_mips: int | None = None,
         storage: dict[str, Path] | None = None,
-        options: dict[str, str] | None = None,
+        options: Mapping[str, Any] | None = None,
         power: str | None = None,
     ) -> FakeMachine:
         if name in self.machines:
             raise ConfigError(f"a machine named {name!r} already exists")
-        definition = board if isinstance(board, Board) else boards.find(board)
+        workdir = (self.workdir / name).as_posix()
+        if isinstance(board, Board):
+            chosen = board.option_values if options is None else options
+            definition = board.evaluate(chosen, workdir) if board.file is not None else board
+        else:
+            definition = boards.find(board, options=options, workdir=workdir)
         plugins = registry.default()
         plugins.load_board(definition)
         driver = driver_for(definition)
@@ -418,7 +528,7 @@ class FakeSimulation:
             performance_mips=performance_mips or definition.performance_mips,
             workdir=self.workdir / name,
             storage_images=dict(storage or {}),
-            options=definition.resolve_options(options),
+            options=dict(definition.option_values),
             hooks=plugins.hooks_for(definition),
         )
         machine = FakeMachine(self, config, driver, power or definition.power_initial)
@@ -440,7 +550,7 @@ class FakeSimulation:
         sources = [machine.board.source for machine in self.machines.values()]
         observers = registry.default().bus_observers_for(sources)
         for name in self._buses:
-            port = CanBusPort(None, name)  # type: ignore[arg-type]  # frames come from tests
+            port = FakeCanPort(self.scheduler, name)
             self.can_buses[name] = port
             context = BusContext(name, port, _TableSink(self))  # type: ignore[arg-type]
             self.bus_observers[name] = {

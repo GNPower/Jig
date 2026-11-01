@@ -1,6 +1,6 @@
 //
 // Contract for non-volatile storage whose contents a test supplies and reads
-// back as a raw image file (board.yaml storage.<name>.peripheral).
+// back as a raw image file (a board file's storage setting).
 //
 namespace Antmicro.Renode.Peripherals.Jig.Contracts
 {
@@ -8,8 +8,8 @@ namespace Antmicro.Renode.Peripherals.Jig.Contracts
     /// file is the byte at device address n.</summary>
     public interface IStorage : IPeripheral
     {
-        /// <summary>Capacity in bytes. board.yaml storage.&lt;name&gt;.size must
-        /// equal it.</summary>
+        /// <summary>Capacity in bytes. A size property the board file gives
+        /// the peripheral must equal it.</summary>
         long Size { get; }
 
         /// <summary>Makes the file at <paramref name="path"/> the device's

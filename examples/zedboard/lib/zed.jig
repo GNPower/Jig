@@ -3,10 +3,10 @@
 #
 #   import "zed.jig"
 
-# Wait for a board's boot banner, which names the board definition and its
-# CSP address, then for the console's first prompt. Returns the banner match.
+# Wait for a board's boot banner, which gives its CSP address, then for the
+# console's first prompt. Returns the banner match.
 procedure booted(board, address, timeout = 2 s) {
-    let banner = board.console.expect("{board.board}: CSP address {address} ", within: timeout)
+    let banner = board.console.expect("CSP address {address} on a ZedBoard", within: timeout)
     board.console.expect("zed> ", within: timeout)
     return banner
 }

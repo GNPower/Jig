@@ -239,7 +239,7 @@ class CspNode:
         self.scheduler = scheduler
         self.rdp_options = rdp_options or RdpOptions()
         # The RDP options for a connection to a destination, when they depend
-        # on it (a board's csp.rdp); None: rdp_options for every destination.
+        # on it (a board's csp(rdp: ...)); None: rdp_options for every destination.
         self.rdp_for: Callable[[int], RdpOptions] | None = None
         self._kiss = kiss
         self._can = can

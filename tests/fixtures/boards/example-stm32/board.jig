@@ -1,0 +1,17 @@
+# An STM32 board for Jig's own tests: firmware built from source by
+# firmware/build.py, booted from flash.
+board "example-stm32" {
+    description: "STM32F4 test fixture"
+    root: "../.."
+
+    device mcu: stm32(part: "STM32F407VG", clock: 168 MHz, mips: 168) {
+        firmware: build("firmware/build.py", sources: "firmware", output: "firmware.elf")
+        boot flash
+        protocol csp(address: 1)
+        interface usart2: cli
+        interface can1: csp over cfp
+    }
+
+    external link console: uart(baud: 115200, members: [mcu.usart2])
+    external link can: can(bitrate: 1 Mbit/s, members: [mcu.can1])
+}

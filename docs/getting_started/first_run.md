@@ -30,14 +30,13 @@ The example is a Jig project of its own, in `examples/zedboard`:
 * - `jig.toml`
   - The project file: the board root `boards`, the plan library `lib`,
     and the Renode versions the example accepts.
-* - `boards/zed-a/board.yaml`, `boards/zed-b/board.yaml`
-  - The two board definitions.
+* - `boards/zedboard/board.jig`
+  - The board file: the ZedBoard's Zynq-7020 with its clocks, boot straps
+    and DDR, the firmware build for each node (the `node` option), and
+    the links that leave the board.
 * - `boards/zedboard.py`
-  - The board plugin both definitions name: the status record's decoder,
-    the plan function `cfp_frames` and two board members.
-* - `zedboard.repl`
-  - The ZedBoard's clocks, boot straps and DDR, on top of the Zynq-7000
-    platform Jig ships.
+  - The board plugin the board file names: the status record's decoder,
+    the plan function `cfp_frames` and a board member.
 * - `lib/zed.jig`
   - Procedures the plans share.
 * - `plans/`
@@ -59,9 +58,9 @@ python examples/zedboard/firmware/build.py
 
 The script compiles `examples/zedboard/firmware/src` once per board and
 writes `zed-node-1.elf` (zed-a) and `zed-node-2.elf` (zed-b) to
-`examples/zedboard/firmware/build`, where the board definitions look for
-them. It takes the compiler from `--cc`, then from `ARM_NONE_EABI_GCC`,
-then from `PATH`, and fails on any compiler warning. On Ubuntu 24.04,
+`examples/zedboard/firmware/build`, where the board file looks for them.
+It takes the compiler from `--cc`, then from `ARM_NONE_EABI_GCC`, then
+from `PATH`, and fails on any compiler warning. On Ubuntu 24.04,
 `sudo apt-get install gcc-arm-none-eabi` installs GCC 13.2.1, which builds
 both ELFs without a warning:
 
@@ -85,19 +84,21 @@ jig run examples/zedboard/plans/multiboard.jig
 ```
 
 Jig finds the example's project file, `examples/zedboard/jig.toml`, by
-searching up from the plan's directory, and the board definitions `zed-a`
-and `zed-b` through it. It starts Renode, builds one machine per board,
-loads each ELF the way a JTAG debugger would, connects both CAN controllers
-to one bus, and attaches a harness CSP node to zed-a's serial link as the
+searching up from the plan's directory, and the `zedboard` board through
+it. The plan declares two instances of it, `a` with node 1's firmware and
+`b` with node 2's. Jig starts Renode, builds one machine per board, loads
+each ELF the way a JTAG debugger would, connects both CAN controllers to
+one bus, and attaches a harness CSP node to zed-a's serial link as the
 host computer. Then it runs the plan's setup block and each test in
 order, all in one emulation.
 
 ```text
 PLAN  examples\zedboard\plans\multiboard.jig
-  board a: zed-a, jtag boot, 100 MIPS
-  board b: zed-b, jtag boot, 100 MIPS
-  bus can0: CAN 1e+06 bit/s, a.can, b.can
-  node host: CSP 10 on link a.kiss
+  board a: zedboard, jtag boot, 100 MIPS, node 1
+  board b: zedboard, jtag boot, 100 MIPS, node 2
+  link can0: CAN 1 Mbit/s, a.can, b.can
+  link ground: UART 115200 baud, a.kiss, host
+  node host: CSP 10 over kiss on ground
   PASS  the host computer reaches zed-b through zed-a  (0.01 s)
   PASS  the host computer pings both boards  (0.02 s)
   PASS  the boards ping each other from their consoles  (0.01 s)
@@ -106,28 +107,29 @@ PLAN  examples\zedboard\plans\multiboard.jig
   PASS  the counters agree with what the bus carried  (0.03 s)
   PASS  pings stop during a link outage and resume after it  (4.81 s)
   PASS  zed-b waits for its debugger after a power cycle  (1.06 s)
-  8 passed, 0 failed, 0 errors (6.0 s simulated, 12.9 s wall); fingerprint 32996f04f7e70f0d
+  8 passed, 0 failed, 0 errors (6.0 s simulated, 12.7 s wall); fingerprint 95c97a90990008c7
 ```
 
 That run was on Windows, and two log lines about Renode's start, which
 name the Renode found and the run directory, are left out after the first
 line. The output names the plan, then lists the system: one line per
-board, bus and node. Each test follows on a line of its own, with its
-status (`PASS`, `FAIL`, `ERROR` or `SKIP`) and the simulated seconds it
-took; a test that did not pass prints the reason below it, such as the
-failed check with the values on both sides. The last line counts the
-outcomes, gives the simulated and the wall time, and prints the first 16
-hex digits of the run's fingerprint; `-v` before `run` also prints every
-step as it happens.
+board, with its options, then one per link and node. Each test follows
+on a line of its own, with its status (`PASS`, `FAIL`, `ERROR` or
+`SKIP`) and the simulated seconds it took; a test that did not pass
+prints the reason below it, such as the failed check with the values on
+both sides. The last line counts the outcomes, gives the simulated and
+the wall time, and prints the first 16 hex digits of the run's
+fingerprint; `-v` before `run` also prints every step as it happens.
 
 The fingerprint covers everything the run decided and measured in
 simulated time, so it depends on what the firmware does and on nothing
-about the host. With ELFs built by GCC 13.2.1, `multiboard.jig` gives
-`32996f04f7e70f0d` on Windows and on Linux. ELFs from GCC 12.2 (Vitis
-2024.1) differ from those byte for byte and give the same fingerprint for
-each of the example's plans, because the firmware acts on its 1 ms timer
-tick; a change to what the firmware does or when, a different message or
-an answer in another tick, gives another fingerprint.
+about the host. With ELFs built by GCC 12.2 (Vitis 2024.1),
+`multiboard.jig` gives `95c97a90990008c7` on Windows. Ubuntu 24.04's
+GCC 13.2.1 builds ELFs that differ from those byte for byte; under Jig
+0.1 the two builds gave the same fingerprint for each of the example's
+plans, on Windows and on Linux, because the firmware acts on its 1 ms
+timer tick. A change to what the firmware does or when, a different
+message or an answer in another tick, gives another fingerprint.
 
 `jig run` exits with 0 when every test passed, 1 when a test failed, 2 for
 a mistake in the plan or a configuration file or a file a board needs that
@@ -155,7 +157,7 @@ holds each console's transcript (`a/console.log`), Renode's log
 values (`telemetry.csv`) and the CSP packets seen on each bus
 (`can0.packets.csv`).
 
-## Check the board definitions
+## Check the board
 
 `jig boards`, `jig check` and `jig boot` find the project from the working
 directory, so run them inside the example:
@@ -167,19 +169,29 @@ jig check
 jig check --contracts
 ```
 
-`jig boards` lists `zed-a` and `zed-b` with the file and the search-path
-entry each came from. `jig check` loads each definition and its plugin and
-reports what is missing, such as an ELF not built yet; both boards print
-`ok`. `--contracts` also builds each board's machine in Renode, without
-booting it, and checks the peripherals board.yaml names against the
-interfaces Jig calls on them.
+`jig boards` lists `zedboard` with its file and the search-path entry it
+came from, then its description and its `node` option:
+
+```text
+zedboard  ...\examples\zedboard\boards\zedboard\board.jig  (jig.toml [paths] boards)
+    Digilent ZedBoard running the example firmware as CSP node 1 or 2
+    option node: 1 (default), 2
+```
+
+`jig check` loads the board file and its plugin and reports what is wrong
+or missing, such as an ELF not built yet or a protocol stack that does
+not fit its interface; the board prints `ok`. `--contracts` also builds
+the board's machine in Renode, without booting it, and checks the
+peripherals the board file names against the interfaces Jig calls on
+them. `jig platform zedboard` prints the Renode platform description Jig
+writes from the board file.
 
 ## Watch a board boot
 
 `jig boot` starts one board and copies its console to the terminal:
 
 ```bash
-jig boot zed-a --seconds 2
+jig boot zedboard --option node=1 --seconds 2
 ```
 
 <!-- The banner's links line is 104 columns, as the firmware prints it. -->
@@ -191,7 +203,7 @@ zed-a: CSP address 1 on a ZedBoard (Zynq-7020, Cortex-A9 core 0)
 links: can0 1000 kbit/s, CSP with 29-bit CFP identifiers; kiss on uart0 115200 baud to host computer 10
 console: uart1 115200 baud, type help
 zed>
---- 2 s simulated in 0.5 s (4.00x real time); total 6.1 s
+--- 2 s simulated in 0.5 s (3.96x real time); total 6.1 s
 ```
 
 <!-- pyml enable md013-->
@@ -199,6 +211,6 @@ zed>
 
 zed-a prints its banner, naming its CSP address and its links, then the
 prompt. The command needs no plan, which makes it the first check for a new
-board definition.
+board.
 
 Next, {doc}`../tutorials/one_zedboard` writes a plan from the start.
