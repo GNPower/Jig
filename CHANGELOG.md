@@ -37,7 +37,7 @@ Breaking changes open with **Breaking** under Changed.
   reset domains, AXI GPIO inputs driven by the FCLK resets, the Quad SPI's
   SCK from `C_SCK_RATIO` and the CDMA's reachable ranges from its address
   map. IP without a model becomes a silent tag. `ip` lines replace an
-  instance's model or place a model behind ports the design exports; a
+  instance's model or place a model behind ports the design exports. A
   device without a block design places them by address range. The
   design's instances and exported ports are names of the device: an AXI
   Quad SPI is an SPI link's controller (`zynq.axi_quad_spi_0`), and an `ip`
@@ -45,7 +45,7 @@ Breaking changes open with **Breaking** under Changed.
   manual's programmable-logic page describes it.
 - Protocol layers `kiss`, `cfp`, `csp`, `vt100` and `cli`, stacked with
   `over` in a device's `interface` lines and a node's declaration. A stack
-  whose layers don't fit is an error that names the missing layer: "csp
+  whose layers don't fit raises an error that names the missing layer: "csp
   needs packets and uart0 gives a byte stream: put kiss between them".
   Plugins add layers with `api.protocol`.
 - The `vt100` layer renders what a board writes as a 24-row terminal shows
@@ -63,11 +63,11 @@ Breaking changes open with **Breaking** under Changed.
 - The STM32 family's part table: `part` picks Renode's STM32F4 platform
   (with the F407's 128 KiB of SRAM1 and SRAM2, and the stock file's own
   tags in place of the SVD file its init downloads) or Jig's STM32U575 and
-  STM32U595 platforms; `platform` takes another part's description; the
-  core's name comes from the platform; `clock` sets the SysTick frequency
+  STM32U595 platforms. `platform` takes another part's description. The
+  core's name comes from the platform, `clock` sets the SysTick frequency
   on an STM32F407 and the DWT cycle counter's on an STM32U5.
 - Sensors on a device's own converter (`mcu.adc4.channel[13]`), with a
-  starting voltage (`= 736 mV`); a Renode STM32 converter gets an
+  starting voltage (`= 736 mV`). A Renode STM32 converter gets an
   `Analog.ADCChannelSource`, and `set_sensor` returns `none` for it.
 - `cli(prompt: ...)` in a stack: `board.cli` returns when the prompt comes
   back instead of after `settle` seconds of quiet.
@@ -78,7 +78,7 @@ Breaking changes open with **Breaking** under Changed.
   A CSP target can be a device.
 - `jig check` checks the device's arguments, each protocol stack, names
   that clash with board members, and that the platform description can be
-  written; it takes `--option NAME=VALUE`. `jig boards` prints each
+  written, it takes `--option NAME=VALUE`. `jig boards` prints each
   board's description and options.
 - For plugins, a CSP node's handle keeps the link it joined as
   `node.link`: the system link's name and kind, the harness's port on it,
@@ -92,14 +92,14 @@ Breaking changes open with **Breaking** under Changed.
 
 ### Changed
 
-- **Breaking**: board.yaml is gone. Jig reads board files only, and no
-  converter is provided; the board-files page of the user manual maps each
+- **Breaking**: board.yaml is removed. Jig reads board files only, and no
+  converter is provided. The board-files page of the user manual maps each
   board.yaml schema 2 key to its new place.
 - **Breaking**: the plan language is grammar version 3, and `over` is a
   reserved word.
 - **Breaking**: a system declares `link` where it declared `bus`:
   `link can0: can(members: [a.can, b.can])`. A system link joins boards'
-  external links and nodes; its rate comes from the boards' links, and a
+  external links and nodes. Its rate comes from the boards' links, and a
   rate it states must agree with them. A link inside a board, or a UART
   link between two boards, is refused in this release.
 - **Breaking**: a node declares the layers under it and joins a link:
@@ -109,7 +109,7 @@ Breaking changes open with **Breaking** under Changed.
   `bus:`. A node that joins no link is an error.
 - **Breaking**: CSP settings belong to the device,
   `protocol csp(address: 5, housekeeping: {...}, rdp: {...})`, in place of
-  board.yaml's `csp` section; RDP times take units and lose their `_ms`
+  board.yaml's `csp` section. RDP times take units and lose their `_ms`
   suffixes (`ack_timeout: 100 ms`).
 - **Breaking**: `board.console` is the board's external link named
   `console`, and `board.cli`, `board.send` and `board.expect` use the one
@@ -118,7 +118,7 @@ Breaking changes open with **Breaking** under Changed.
   as `board.kiss`.
 - **Breaking**: a power cycle restarts every peripheral whose model
   implements `IPowerCycled`, which Jig finds in the machine at run time,
-  except those in `backup_supply`; board.yaml's `power.restart` list is
+  except those in `backup_supply`, board.yaml's `power.restart` list is
   gone.
 - **Breaking**: `jig check` no longer compares hand-written clocks with a
   design's `ps7_init`, since Jig writes the clocks.
@@ -130,11 +130,11 @@ Breaking changes open with **Breaking** under Changed.
 - **Breaking**: device families register under the `jig.device_families`
   entry-point group, which replaces `jig.socs`. A family's driver writes
   its part of the platform description (`platform_lines`) and checks the
-  device's arguments (`arguments`); `jig.system.socs` lists the optional
+  device's arguments (`arguments`), `jig.system.socs` lists the optional
   methods.
 - **Breaking**: for plugins and drivers, `Board` keeps its fields for the
   board's one device, except `platform`, `clocks` and `soc_platform`, which
-  are gone; `options` holds `OptionSpec` values, and option values keep
+  are gone. `options` holds `OptionSpec` values, and option values keep
   their types. `MachineConfig.choices()` is gone.
 - **Breaking**: the ZedBoard example has one board, `zedboard`, with
   `option node` choosing the firmware, in place of `zed-a` and `zed-b`.
@@ -142,7 +142,7 @@ Breaking changes open with **Breaking** under Changed.
   `jig platform` writes. The fingerprints of `two_zedboards.jig`,
   `profiles_timelines.jig` and `multiboard.jig` changed, because `booted`
   in `lib/zed.jig` matched the boot banner against the board's name and
-  now matches the address alone; every other step is unchanged.
+  now matches the address alone, every other step is unchanged.
 - Run reports write a CAN link's bit rate with its unit and a UART link's
   baud rate in whole bauds: `link can0: CAN 1 Mbit/s` where 0.1.0a2 wrote
   `bus can0: CAN 1e+06 bit/s`, and `UART 2000000 baud`. Errors about a
@@ -213,7 +213,7 @@ Breaking changes open with **Breaking** under Changed.
   analog inputs, real-time clocks, SPI NOR flash), checked by
   `jig check --contracts`.
 - SoC drivers for the Zynq-7000 (JTAG and Quad-SPI boot) and STM32 (ELF
-  boot; with the STM32U5 RCC, a Jig reset reads as the reset pin and a
+  boot, with the STM32U5 RCC, a Jig reset reads as the reset pin and a
   power cycle as power-on), registered through the `jig.socs` entry-point
   group.
 - The CSP extension: libcsp 1.6's header, KISS with CRC-32C, CAN

@@ -44,8 +44,8 @@ test "the host computer reaches zed-b through zed-a" {
 ```
 
 This is the start of `examples/zedboard/plans/multiboard.jig`. Both
-boards are ZedBoards; the `node` option picks the firmware build each one
-runs, zed-a or zed-b. The host computer is a CSP node the harness runs on
+boards are ZedBoards, the `node` option picks the firmware build each one
+runs (zed-a or zed-b). The host computer is a CSP node the harness runs on
 zed-a's KISS serial link. The setup waits, on both boards at once, for the
 boot banner and the first prompt (`booted` comes from the example's plan
 library, `lib/zed.jig`). The test then pings zed-b from the host computer
