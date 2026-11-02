@@ -63,7 +63,7 @@ lint = [
 typecheck = [
     "jig-dsl[test]",
     "mypy==2.4.1",
-    "types-PyYAML==6.0.12.20260906",
+    "types-PyYAML==6.0.12.20261030",
     "nox==2026.10.20",
 ]
 release = [
