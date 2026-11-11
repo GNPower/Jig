@@ -57,7 +57,8 @@ BoardDefinition:
 ;
 
 BoardMember:
-    OptionDecl | DeviceDecl | PeripheralDecl | LinkDecl | SensorDecl | BoardIf | Setting
+    OptionDecl | DeviceDecl | PeripheralDecl | LinkDecl | SensorDecl | PartitionDecl | BoardIf
+    | Setting
 ;
 
 OptionDecl:
@@ -75,6 +76,12 @@ LinkDecl:
 
 SensorDecl:
     'sensor' name=ID ':' pin=Expr ('=' initial=Expr)?
+;
+
+/* A region of a storage device or of a device's own memory, in a format:
+   partition data: littlefs(on: flash0, at: 1 MiB, size: 15 MiB, ...). */
+PartitionDecl:
+    'partition' name=ID ':' value=Expr
 ;
 
 Setting:

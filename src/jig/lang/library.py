@@ -12,6 +12,7 @@ seconds of simulated time.
 
 from __future__ import annotations
 
+import builtins
 import math
 import random
 import re
@@ -30,6 +31,8 @@ from jig.runtime.scheduler import seconds_to_ns
 
 if TYPE_CHECKING:
     from jig.runtime.scheduler import Scheduler
+    from jig.storage.formats import Entry, FileSystemView
+    from jig.storage.layout import Partition
     from jig.system.boards import Board
     from jig.system.model import Link
     from jig.system.socs import MachineConfig
@@ -388,15 +391,138 @@ class PeripheralHandle:
         return self._model
 
 
+class PartitionError(JigError):
+    """A partition's file system did not hold what a plan read from it: a
+    missing path, or bytes its format can't mount. The step fails."""
+
+
+class PartitionHandle:
+    """A partition of a board (``a.data``): where it is, its bytes as they
+    stand and, when its format holds files, the files.
+
+    On a storage device the members read the device's image file, which the
+    model writes as each program or erase completes; on a memory of the
+    device they read the machine. Plans read between steps, while Renode is
+    paused. A file system that does not commit atomically (FAT) can show a
+    file the firmware is halfway through writing: read once the firmware is
+    idle. Each member reads the bytes again, so it sees the latest state."""
+
+    dsl_members = frozenset(
+        {"name", "format", "at", "size", "bytes", "files", "walk", "read", "exists", "stat"}
+    )
+
+    def __init__(self, board: BoardHandle, name: str) -> None:
+        self.board = board
+        self._name = name
+
+    def __repr__(self) -> str:
+        return f"<partition {self._label}>"
+
+    @property
+    def _label(self) -> str:
+        return f"{self.board.name}.{self._name}"
+
+    @property
+    def partition(self) -> Partition:
+        """The partition, resolved (``jig.storage.layout.Partition``)."""
+        found: Partition = self.board.machine.layout.partition(self._name)
+        return found
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def format(self) -> str:
+        """The partition's format: ``raw``, ``littlefs``, ``fat``, a plugin's."""
+        return self.partition.format_name
+
+    @property
+    def at(self) -> int:
+        """Its first byte's offset in its storage device or memory."""
+        return self.partition.at
+
+    @property
+    def size(self) -> int:
+        return self.partition.size
+
+    def bytes(self) -> builtins.bytes:
+        """The partition's bytes as they stand."""
+        data: builtins.bytes = self.board.machine.partition_bytes(self._name)
+        return data
+
+    def _view(self) -> FileSystemView:
+        partition = self.partition
+        data = self.bytes()
+        try:
+            opened = partition.format.open(data, partition.arguments)
+        except ConfigError as exc:
+            raise PartitionError(
+                f"{self._label}: {partition.format_name} cannot read it: {exc}"
+            ) from None
+        if opened is None:
+            raise DslError(
+                f"{self._label} is {partition.format_name}, a format without files: "
+                "read its bytes()"
+            )
+        return opened
+
+    def _ask(self, ask: Callable[[FileSystemView], Any]) -> Any:
+        view = self._view()
+        try:
+            return ask(view)
+        except ConfigError as exc:
+            raise PartitionError(f"{self._label}: {exc}") from None
+
+    def files(self, path: str = "/") -> list[Record]:
+        """The entries directly inside ``path``, sorted by name: each a record
+        of ``path``, ``name``, ``kind`` (``file`` or ``dir``) and ``size``."""
+        found: list[Entry] = self._ask(lambda view: view.files(_text_path(path)))
+        return [_entry(entry) for entry in found]
+
+    def walk(self) -> list[Record]:
+        """Every entry under the root, depth first."""
+        found: list[Entry] = self._ask(lambda view: view.walk())
+        return [_entry(entry) for entry in found]
+
+    def read(self, path: str) -> builtins.bytes:
+        """A file's contents."""
+        data: builtins.bytes = self._ask(lambda view: view.read(_text_path(path)))
+        return data
+
+    def exists(self, path: str) -> bool:
+        """Whether a file or a directory is at ``path``."""
+        return bool(self._ask(lambda view: view.exists(_text_path(path))))
+
+    def stat(self, path: str) -> Record:
+        """The entry at ``path``: ``path``, ``name``, ``kind`` and ``size``."""
+        found: Entry = self._ask(lambda view: view.stat(_text_path(path)))
+        return _entry(found)
+
+
+def _text_path(path: Any) -> str:
+    if not isinstance(path, str) or not path:
+        raise DslError(
+            f'a path in a partition is text, such as "/config/settings.txt", not {show(path)}'
+        )
+    return path
+
+
+def _entry(entry: Entry) -> Record:
+    return Record(path=entry.path, name=entry.name, kind=entry.kind, size=entry.size)
+
+
 def name_collisions(board: Board, members: Iterable[str]) -> list[str]:
-    """The board's devices, peripherals and links whose names a board
-    handle already uses for a member (``reset``, a plugin's ``uptime``)."""
+    """The board's devices, peripherals, links and partitions whose names a
+    board handle already uses for a member (``reset``, a plugin's
+    ``uptime``)."""
     taken = set(BoardHandle.dsl_members) | set(members)
     found = []
     for kind, names in (
         ("device", [device.name for device in board.devices]),
         ("peripheral", [part.name for part in board.peripherals]),
         ("link", [link.name for link in board.links]),
+        ("partition", [partition.name for partition in board.partitions]),
     ):
         for name in names:
             if name in taken:
@@ -411,10 +537,10 @@ class BoardHandle:
     """One emulated board.
 
     Besides the plan members in ``dsl_members``, a plan reaches the board's
-    devices, peripherals and links by name (``a.zynq``, ``a.flash0``,
-    ``a.console``). Plugins read ``definition`` (the board), ``config`` (the
-    machine's settings), ``root``, ``workdir`` and ``console``, and call
-    ``emit(kind, detail)``."""
+    devices, peripherals, links and partitions by name (``a.zynq``,
+    ``a.flash0``, ``a.console``, ``a.data``). Plugins read ``definition``
+    (the board), ``config`` (the machine's settings), ``root``, ``workdir``
+    and ``console``, and call ``emit(kind, detail)``."""
 
     dsl_kind = "board"
     dsl_members = frozenset(
@@ -535,8 +661,8 @@ class BoardHandle:
         self._links[name] = handle
 
     def dsl_attribute(self, name: str) -> Any:
-        """``dut.kiss``, ``dut.zynq``, ``dut.flash0``: a link, a device or a
-        peripheral of the board by name."""
+        """``dut.kiss``, ``dut.zynq``, ``dut.flash0``, ``dut.data``: a link, a
+        device, a peripheral or a partition of the board by name."""
         board = self._machine.board
         if any(link.name == name for link in board.links):
             return self.link(name)
@@ -546,6 +672,8 @@ class BoardHandle:
         for part in board.peripherals:
             if part.name == name:
                 return PeripheralHandle(self, part.name, part.model)
+        if any(partition.name == name for partition in board.partitions):
+            return PartitionHandle(self, name)
         return None
 
     @property

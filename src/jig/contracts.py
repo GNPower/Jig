@@ -8,9 +8,10 @@ peripheral requires it to implement one C# interface from
 ``Antmicro.Renode.Peripherals.Jig.Contracts`` (``src/jig/models/Contracts``):
 
 ``storage: [...]``
-    ``IStorage`` (``AttachImage(path)``, ``Size``) for every peripheral in the
-    list; a ``size`` property the peripheral declares must equal the model's
-    ``Size``.
+    ``IStorage`` (``AttachImage(path)``, ``Size``, ``ErasedValue``) for every
+    peripheral in the list; a ``size`` property the peripheral declares must
+    equal the model's ``Size``. The query also reports ``ErasedValue``, the
+    byte a run fills the device's composed image with.
 ``sensor NAME: ...``
     ``IAnalogInputs`` (``SetChannelVoltage``, ``GetChannelCode``,
     ``CodeFor``, ``ChannelCount``) for the converter, and the channel must be
@@ -39,6 +40,7 @@ from typing import Protocol
 from jig.errors import RenodeError
 
 QUERY = "JigContracts"
+ERASED_VALUE = "ErasedValue"  # a value the query reports, not an interface
 
 STORAGE = "IStorage"
 ANALOG_INPUTS = "IAnalogInputs"
@@ -124,6 +126,7 @@ class Contracts:
     interfaces: frozenset[str] = field(default_factory=frozenset)
     size: int | None = None  # IStorage.Size
     channel_count: int | None = None  # IAnalogInputs.ChannelCount
+    erased: int | None = None  # IStorage.ErasedValue
 
 
 def parse(reply: str) -> Contracts | None:
@@ -139,7 +142,8 @@ def parse(reply: str) -> Contracts | None:
     values: dict[str, int] = {}
     for word in words[2:]:
         name, _, value = word.partition("=")
-        interfaces.add(name)
+        if name != ERASED_VALUE:
+            interfaces.add(name)
         if value:
             try:
                 values[name] = int(value)
@@ -150,6 +154,7 @@ def parse(reply: str) -> Contracts | None:
         interfaces=frozenset(interfaces),
         size=values.get(STORAGE),
         channel_count=values.get(ANALOG_INPUTS),
+        erased=values.get(ERASED_VALUE),
     )
 
 

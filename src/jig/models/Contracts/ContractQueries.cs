@@ -8,7 +8,9 @@
 // the peripheral's class (without the Antmicro.Renode.Peripherals. prefix) and
 // each contract interface it implements. IStorage and IAnalogInputs carry the
 // value the board file must agree with: "IStorage=<Size>",
-// "IAnalogInputs=<ChannelCount>".
+// "IAnalogInputs=<ChannelCount>". A storage device adds its erased value,
+// "ErasedValue=<n>", which is not an interface; the interface's default
+// member answers for a model that does not override it.
 // A name resolves as the monitor resolves it: as written, then with "sysbus."
 // in front.
 //
@@ -32,6 +34,7 @@ namespace Antmicro.Renode.Peripherals.Jig.Contracts
             if(found is IStorage storage)
             {
                 words.Add("IStorage=" + storage.Size.ToString(CultureInfo.InvariantCulture));
+                words.Add("ErasedValue=" + storage.ErasedValue.ToString(CultureInfo.InvariantCulture));
             }
             if(found is IAnalogInputs inputs)
             {

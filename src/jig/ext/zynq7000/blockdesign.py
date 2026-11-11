@@ -814,6 +814,22 @@ def render(
     return _Writer(design, fclk_hz, overrides).text()
 
 
+def block_ram(
+    design: BlockDesign, fclk_hz: Mapping[int, float], overrides: Sequence[IpOverride] = ()
+) -> dict[str, tuple[int, int]]:
+    """The block RAM of the platform text :func:`render` writes, by name, as
+    (base address, size): each AXI BRAM controller that keeps Jig's model or
+    that an ip line gives ``memory(...)``, and each ip line's ``memory(...)``
+    placed elsewhere. The PL domain clears each with the PL."""
+    writer = _Writer(design, fclk_hz, overrides)
+    writer.text()
+    return {
+        entry.name: (entry.windows[0][0], entry.windows[0][1])
+        for entry in sorted(writer.entries, key=lambda e: e.name)
+        if entry.memory
+    }
+
+
 # --------------------------------------------------------------- writing
 
 

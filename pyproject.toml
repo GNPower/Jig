@@ -35,6 +35,8 @@ dependencies = [
     "PyYAML>=6,<7",
     "platformdirs>=4,<5",
     "packaging>=23",
+    "littlefs-python>=0.19,<0.20",
+    "pyfatfs>=1.1,<1.2",
 ]
 
 [project.urls]

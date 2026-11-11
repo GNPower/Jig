@@ -1,0 +1,1 @@
+Hello from the STM32F4's own flash.

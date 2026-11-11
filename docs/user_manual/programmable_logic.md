@@ -99,7 +99,8 @@ line, its ID and where it goes.
 
 Jig's Zynq-7000 platform models the PL as a reset domain, the `pl`
 peripheral (`Zynq7000_PlDomain`). Block RAM it holds is cleared when the PL
-is reset or configured again. An AXI slave it holds stalls the CPU when
+is reset or configured again, and a configuration then loads the block
+RAM's initial contents. An AXI slave it holds stalls the CPU when
 software reaches it while its FCLK reset is asserted, as the AXI
 interconnect does on the chip.
 
@@ -122,6 +123,33 @@ of channel 1 (`gpio_io_i`) is the model's input n, and bit n of channel 2
   (`SetInput 1 2 true`);
 - an input from a port of the design is listed in the entry's comment, for
   the board's links to drive.
+
+## Block RAM initial contents
+
+On the chip, a bitstream's INIT values fill block RAM each time the PL is
+configured. Jig doesn't read them from the bitstream, so block RAM reads
+0 after a configuration unless a partition of the board file gives it
+contents ({doc}`storage`):
+
+```jig
+partition table: raw(on: zynq.axi_bram_ctrl_0, at: 0x100, size: 256 B,
+                     contents: "build/table.bin")
+```
+
+A partition can name each block RAM the generated text registers with
+`AddMemory`: each AXI BRAM controller of the block design that keeps
+Jig's model or that an `ip` line gives `memory(...)`, and each `ip` line's
+own `memory(...)` block, by name. `at` counts from the memory's first
+byte. A block RAM named `ocm` is an error, since `zynq.ocm` names the
+on-chip memory.
+
+Jig hands each partition's bytes to the PL domain before the boot
+(`pl AddInitialContents sysbus.axi_bram_ctrl_0 0x100 "<file>"`), and the
+PL domain writes them every time the PL becomes configured: by the JTAG
+boot, which loads the design's bitstream through `devc ConfigureFromJtag`,
+and by the firmware's PCAP transfer. Clearing the configuration with
+PROG_B, or a system reset, leaves block RAM at 0 until the next
+configuration loads it again.
 
 ## The AXI Quad SPI clock and the AXI CDMA's reach
 

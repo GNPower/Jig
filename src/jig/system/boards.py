@@ -45,7 +45,7 @@ from typing import TYPE_CHECKING, Any
 
 from jig import project
 from jig.errors import ConfigError
-from jig.system.model import Device, Link, OptionSpec, Peripheral, SensorSpec
+from jig.system.model import Device, Link, OptionSpec, PartitionSpec, Peripheral, SensorSpec
 from jig.system.renode_shim import ModelSet
 
 if TYPE_CHECKING:
@@ -184,6 +184,7 @@ class Board:
     option_values: dict[str, Any] = field(default_factory=dict)
     workdir: str = ""
     cosim: tuple[CosimSpec, ...] = ()
+    partitions: tuple[PartitionSpec, ...] = ()  # in the order the board file declares them
     file: BoardFile | None = field(default=None, compare=False, repr=False)
 
     @property
@@ -263,6 +264,13 @@ class Board:
                 return peripheral
         known = ", ".join(p.name for p in self.peripherals) or "none"
         raise ConfigError(f"board {self.name} has no peripheral {name!r} (has: {known})")
+
+    def partition(self, name: str) -> PartitionSpec:
+        for partition in self.partitions:
+            if partition.name == name:
+                return partition
+        known = ", ".join(p.name for p in self.partitions) or "none"
+        raise ConfigError(f"board {self.name} has no partition {name!r} (has: {known})")
 
     def cli_links(self) -> list[str]:
         """The external UART links whose device interface runs ``cli``."""

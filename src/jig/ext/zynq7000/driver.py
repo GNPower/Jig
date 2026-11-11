@@ -57,12 +57,21 @@ Boot modes:
     for a boot header and starts the FSBL found there, which configures the PL
     and loads the application from its slot. The flash starts from a prebuilt
     image passed to the run, or from one the board's plugin builds
-    (``api.zynq_hooks(qspi_image=...)``). ``boot qspi: {storage: flash0}``
-    names the flash (``flash0`` by default).
+    (``api.zynq_hooks(qspi_image=...)``), under the board's partitions on it;
+    a board whose partitions or storage map fill the flash needs neither.
+    ``boot qspi: {storage: flash0}`` names the flash (``flash0`` by default).
 
 After a reset the BootROM always follows the straps, as on the board. A power
 cycle halts the core, resets the machine, restarts the chips on the board's
 supply and runs the BootROM again with the power-on reset cause.
+
+The device's own memories (``memories``): ``ocm``, the 256 KiB of on-chip
+memory, which the BootROM loads with the partitions on it at every power-on,
+after it clears OCM and before it reads the boot device; and the block RAM
+of the programmable logic, each AXI BRAM controller of the block design and
+each ip line's ``memory(...)`` by its name, which the PL domain loads with
+their partitions each time the PL is configured, as a bitstream's initial
+values.
 """
 
 from __future__ import annotations
@@ -70,7 +79,6 @@ from __future__ import annotations
 import functools
 import logging
 import re
-import shutil
 import zipfile
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
@@ -93,7 +101,8 @@ from jig.ext.zynq7000.blockdesign import (
 )
 from jig.ext.zynq7000.clocks import ZynqClocks
 from jig.ext.zynq7000.ps7init import Ps7Init, write_program
-from jig.renode.session import RenodeSession
+from jig.renode.session import RenodeSession, monitor_path
+from jig.storage.memory import PL_BLOCK_RAM, VOLATILE, DeviceMemory, Piece
 from jig.system.boards import Board, RegisterMapSource
 from jig.system.generate import Pin, repl_value
 from jig.system.model import (
@@ -147,6 +156,12 @@ EMIO_PINS = 64
 RESET_PINS = {"ps_por_b": 0, "ps_srst_b": 1}  # the SLCR's GPIO inputs
 
 DDR_BASE = 0x00100000
+
+# OCM as the BootROM leaves it, in Jig's xilinx/zynq7000 platform: ocmLow, the
+# first 192 KiB at 0x0, and ocmHigh, the last 64 KiB at 0xFFFF0000.
+OCM = "ocm"
+OCM_LOW = 0x30000
+OCM_HIGH = 0x10000
 
 # The link kind of each PL IP Jig models that a link can name as its
 # controller, by VLNV without the version (PG153: the AXI Quad SPI's standard
@@ -554,6 +569,10 @@ class Zynq7000Driver:
             result[source.target] = artifacts.cached("airhdl-map", inputs, build) / "map.json"
         return result
 
+    def _has_hook(self, config: MachineConfig, name: str) -> bool:
+        hooks = config.hooks.get(FAMILY)
+        return self.image_builder is not None or getattr(hooks, name, None) is not None
+
     def _hook(self, config: MachineConfig, name: str) -> Any:
         if self.image_builder is not None:
             return getattr(self.image_builder, name)
@@ -570,6 +589,66 @@ class Zynq7000Driver:
         """The flash image for a Quad-SPI boot, from the board's image builder."""
         image: Path = self._hook(config, "qspi_image")(config)
         return image
+
+    @staticmethod
+    def qspi_storage(config: MachineConfig) -> str:
+        """The storage peripheral a Quad-SPI boot reads: ``boot qspi:
+        {storage: ...}``, ``flash0`` by default."""
+        return str((config.board.boot.get("qspi") or {}).get("storage", "flash0"))
+
+    def base_images(self, config: MachineConfig) -> dict[str, Path]:
+        """The image a Quad-SPI boot starts from, under the partitions of the
+        flash it reads, when the system gives no file for that whole flash:
+        the board's image builder's (``qspi_image``). A board without one
+        whose partitions or storage map write that flash gets none."""
+        if config.boot != "qspi":
+            return {}
+        target = self.qspi_storage(config)
+        if target in config.storage_images:
+            return {}
+        if not self._has_hook(config, "qspi_image"):
+            composed = target in config.sources() or any(
+                partition.target == target for partition in config.board.partitions
+            )
+            if composed:
+                return {}
+        return {target: self.qspi_image(config)}
+
+    def memories(self, board: Board) -> dict[str, DeviceMemory]:
+        """``ocm`` (volatile: the BootROM loads it at every power-on) and the
+        block RAM of the programmable logic by name (loaded each time the PL
+        is configured)."""
+        found = {
+            OCM: DeviceMemory(
+                OCM,
+                OCM_LOW + OCM_HIGH,
+                VOLATILE,
+                pieces=(Piece("ocmLow", 0, OCM_LOW), Piece("ocmHigh", OCM_LOW, OCM_HIGH)),
+            )
+        }
+        for name, (address, size) in self.block_ram(board).items():
+            if name in found:
+                raise ConfigError(
+                    f"{board.device.where}: block RAM {name} has the name of the device's "
+                    f"{name} memory"
+                )
+            found[name] = DeviceMemory(name, size, PL_BLOCK_RAM, address=address)
+        return found
+
+    def block_ram(self, board: Board) -> dict[str, tuple[int, int]]:
+        """The block RAM of the programmable logic, by name, as (base, size):
+        what the platform description registers with the PL domain."""
+        device = board.device
+        xsa = self.xsa_path(board)
+        if xsa is None and not any(ip.memory for ip in device.ips):
+            return {}
+        overrides = self.overrides(board, device)
+        design = self.design(board)
+        fclk = self.fclk_hz(board) if xsa is not None else {}
+        try:
+            return blockdesign.block_ram(design, fclk, overrides)
+        except ConfigError as exc:
+            raise ConfigError(f"{_ip_where(device, str(exc))}{exc}") from None
 
     def images(self, config: MachineConfig) -> dict[str, Path]:
         """The firmware images by role, from the board's image builder."""
@@ -629,28 +708,24 @@ class Zynq7000Driver:
         return "\n".join(lines)
 
     def configure(self, config: MachineConfig, session: RenodeSession) -> None:
+        """The straps, and what the device's memories receive: OCM's regions
+        go to the BootROM, which writes them at every power-on after it
+        clears OCM; block RAM's go to the PL domain, which writes them each
+        time the PL is configured. Jig attaches the storage images itself."""
         session.select_machine(config.name)
         straps = self._straps(config)
         if straps is not None:
             session.execute(f"slcr BootMode {straps}")
-        images = dict(config.storage_images)
-        if config.boot == "qspi":
-            target = str((config.board.boot.get("qspi") or {}).get("storage", "flash0"))
-            if target not in images:
-                images[target] = self.qspi_image(config)
-        for storage in config.board.storage:
-            image = config.workdir / f"{storage.name}.img"
-            source = images.get(storage.name)
-            if source is not None:
-                if not source.is_file():
-                    raise ConfigError(f"{config.name}: image {source} for {storage.name} not found")
-                if storage.size is not None and source.stat().st_size > storage.size:
-                    raise ConfigError(
-                        f"{config.name}: image {source} is larger than "
-                        f"{storage.name} ({storage.size} bytes)"
+        for image in config.memory_images.values():
+            memory = image.memory
+            for region in image.regions:
+                path = monitor_path(region.path)
+                if memory.name == OCM:
+                    session.execute(f"bootrom AddPowerOnContents 0x{region.offset:X} {path}")
+                elif memory.kind == PL_BLOCK_RAM:
+                    session.execute(
+                        f"pl AddInitialContents sysbus.{memory.name} 0x{region.offset:X} {path}"
                     )
-                shutil.copyfile(source, image)
-            session.execute(f"{storage.peripheral} AttachImage @{image.as_posix()}")
 
     def boot(self, config: MachineConfig, session: RenodeSession) -> None:
         session.select_machine(config.name)
@@ -703,10 +778,10 @@ class Zynq7000Driver:
         session.execute("bootrom HoldCoreForDebugger true")
         session.execute("bootrom PowerOn")
         if program is not None:
-            session.execute(f"machine RunRegisterProgram @{program.as_posix()}")
+            session.execute(f"machine RunRegisterProgram {monitor_path(program)}")
         if bitstream is not None:
-            session.execute(f"devc ConfigureFromJtag @{bitstream.as_posix()}")
-        session.execute(f"sysbus LoadELF @{app.as_posix()}")
+            session.execute(f"devc ConfigureFromJtag {monitor_path(bitstream)}")
+        session.execute(f"sysbus LoadELF {monitor_path(app)}")
         session.execute("bootrom HoldCoreForDebugger false")
         session.execute("cpu0 IsHalted false")
 

@@ -10,7 +10,8 @@ plans once the package is installed. The rules follow the grammar in
 * declarations (``system``, ``board``, ``link``, ``node``, ``const``,
   ``procedure``, ``setup``, ``teardown``, ``test``, ``import``, and in board
   files ``option``, ``device``, ``peripheral``, ``external link``,
-  ``sensor``, ``boot``, ``protocol``, ``interface``, ``ip``, ``unmodelled``)
+  ``sensor``, ``partition``, ``boot``, ``protocol``, ``interface``, ``ip``,
+  ``unmodelled``)
   only where they open a declaration, since the grammar lets ``board`` or
   ``test`` name a variable elsewhere.
 * quantities, a number and its unit (``100 ms``, ``1 Mbit/s``).
@@ -133,6 +134,9 @@ BUILTINS = (
     "airhdl",
     "build",
     "command",
+    "raw",
+    "littlefs",
+    "fat",
     "zynq7000",
     "stm32",
 )
@@ -146,6 +150,7 @@ DECLARATIONS = (
     "device",
     "peripheral",
     "sensor",
+    "partition",
     "protocol",
     "interface",
     "ip",

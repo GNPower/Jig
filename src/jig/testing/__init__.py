@@ -11,7 +11,9 @@
   board's UART reaches a test's ``FakeBoard`` through ``uarts``, a CAN link
   is a ``FakeCanPort`` that keeps and acknowledges the frames harness nodes
   write and takes the frames a test feeds it, and ``on_board`` scripts a
-  machine's ``FakeConsole`` once the plan declares it.
+  machine's ``FakeConsole`` once the plan declares it. A partition reads
+  ``<machine directory>/<storage>.img`` when a test wrote it, or the bytes a
+  test puts in ``FakeMachine.memories`` for a memory of the device.
 
 For example::
 
@@ -39,6 +41,9 @@ from jig.lang.parser import load
 from jig.report.report import SuiteReport
 from jig.runtime.environment import BackgroundRegistry
 from jig.runtime.scheduler import Scheduler, WaitTimeoutError, seconds_to_ns
+from jig.storage import layout as storage_layout
+from jig.storage import readback
+from jig.storage.layout import Layout
 from jig.system import boards, registry
 from jig.system.boards import Board
 from jig.system.socs import MachineConfig, SocDriver, driver_for
@@ -300,7 +305,9 @@ class FakeMachine:
     definition and settings, power and reset (as events), consoles a test
     scripts (``FakeConsole``) and the UARTs it connects through
     ``FakeSimulation.uarts``. Monitor commands are recorded in ``commands``
-    and answer nothing."""
+    and answer nothing. ``memories`` holds the bytes of the device's own
+    memories a test gives, by memory name (``flash``), which partitions on
+    them read."""
 
     def __init__(
         self, simulation: FakeSimulation, config: MachineConfig, driver: SocDriver, power: str
@@ -313,6 +320,8 @@ class FakeMachine:
         self.booted = False
         self.commands: list[str] = []
         self.consoles: dict[str, FakeConsole] = {}
+        self.memories: dict[str, bytes] = {}
+        self._layout: Layout | None = None
 
     def __repr__(self) -> str:
         return f"<FakeMachine {self.name} ({self.board.name})>"
@@ -350,6 +359,27 @@ class FakeMachine:
     def execute(self, command: str) -> str:
         self.commands.append(command)
         return ""
+
+    @property
+    def layout(self) -> Layout:
+        if self._layout is None:
+            self._layout = storage_layout.for_board(self.board, self.driver, self.config.sources())
+        return self._layout
+
+    def partition_bytes(self, name: str) -> bytes:
+        """A partition's bytes: from ``<workdir>/<storage>.img``, or from
+        ``memories`` for a memory of the device."""
+        partition = self.layout.partition(name)
+        memory = partition.target.memory
+        if memory is None:
+            path = readback.image_path(self.config.workdir, partition.target.name)
+            return readback.from_file(partition, path)
+        data = self.memories.get(memory.name)
+        if data is None:
+            raise ConfigError(
+                f"{self.name}: no bytes for memory {memory.name} (FakeMachine.memories)"
+            )
+        return readback.from_image(partition, data, f"{self.name}'s {memory.name}")
 
     def reset(self) -> None:
         self.simulation.emit(self.name, "reset", "system reset input")
@@ -506,7 +536,7 @@ class FakeSimulation:
         *,
         boot: str | None = None,
         performance_mips: int | None = None,
-        storage: dict[str, Path] | None = None,
+        storage: Mapping[str, Any] | None = None,
         options: Mapping[str, Any] | None = None,
         power: str | None = None,
     ) -> FakeMachine:
@@ -521,15 +551,26 @@ class FakeSimulation:
         plugins = registry.default()
         plugins.load_board(definition)
         driver = driver_for(definition)
+        sources = storage_layout.sources(storage)
+        try:
+            storage_layout.for_board(definition, driver, sources).raise_problems()
+        except ConfigError as exc:
+            raise ConfigError(f"{name}: {exc}") from None
+        devices = {s.name for s in definition.storage}
         config = MachineConfig(
             name=name,
             board=definition,
             boot=boot or definition.default_boot,
             performance_mips=performance_mips or definition.performance_mips,
             workdir=self.workdir / name,
-            storage_images=dict(storage or {}),
+            storage_images={
+                key: value
+                for key, value in sources.items()
+                if key in devices and isinstance(value, Path)
+            },
             options=dict(definition.option_values),
             hooks=plugins.hooks_for(definition),
+            storage_sources=sources,
         )
         machine = FakeMachine(self, config, driver, power or definition.power_initial)
         self.machines[name] = machine

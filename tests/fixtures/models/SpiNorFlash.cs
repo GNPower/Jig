@@ -38,6 +38,18 @@
 //   flash0: JigFixtures.SpiNorFlash @ qspi 0
 //       size: 0x1000000
 //
+// Chip select: a controller that ends each command itself, as Jig's QSPI and
+// SPI models do through FinishTransmission, needs no wire. Renode's STM32SPI
+// never does, so firmware on it drives chip select from a GPIO pin wired to
+// GPIO input 0 (IGPIOReceiver): a rising edge ends the command as
+// FinishTransmission does, and bytes sent while the input is high reach no
+// command. The input's level is the board's, so Reset and PowerCycle keep it.
+//
+//   flash0: JigFixtures.SpiNorFlash @ spi1
+//       size: 0x400000
+//   gpioPortA:
+//       4 -> flash0@0
+//
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -49,7 +61,7 @@ using Antmicro.Renode.Time;
 
 namespace Antmicro.Renode.Peripherals.JigFixtures
 {
-    public sealed class SpiNorFlash : ISpiNorFlash, IStorage
+    public sealed class SpiNorFlash : ISpiNorFlash, IStorage, IGPIOReceiver
     {
         public SpiNorFlash(IMachine machine, long size = 0x1000000, byte manufacturerId = 0xA5, byte memoryType = 0x5A,
                            ulong pageProgramMicroseconds = 500, ulong sectorEraseMicroseconds = 30000,
@@ -162,10 +174,32 @@ namespace Antmicro.Renode.Peripherals.JigFixtures
 
         // ------------------------------------------------------------ SPI wire
 
+        public void OnGPIO(int number, bool value)
+        {
+            if(number != ChipSelectInput)
+            {
+                this.Log(LogLevel.Warning, "No GPIO input {0}: chip select is input {1}", number, ChipSelectInput);
+                return;
+            }
+            lock(sync)
+            {
+                if(value && !chipSelectHigh)
+                {
+                    FinishTransmission();
+                }
+                chipSelectHigh = value;
+            }
+        }
+
         public byte Transmit(byte data)
         {
             lock(sync)
             {
+                if(chipSelectHigh)
+                {
+                    this.Log(LogLevel.Debug, "Byte 0x{0:X2} ignored: chip select is high", data);
+                    return Undriven;
+                }
                 switch(phase)
                 {
                 case Phase.Opcode:
@@ -541,6 +575,7 @@ namespace Antmicro.Renode.Peripherals.JigFixtures
         private bool busy;
         private bool writeEnable;
         private byte blockProtect;
+        private bool chipSelectHigh;
 
         private enum Phase
         {
@@ -557,6 +592,7 @@ namespace Antmicro.Renode.Peripherals.JigFixtures
         private const long SectorSize = 0x1000;
         private const long BlockSize = 0x10000;
         private const int DummyClocks = 8;
+        private const int ChipSelectInput = 0;
         private const byte BfptOffset = 0x10;
         private const byte Erased = 0xFF;
         private const byte Undriven = 0xFF;

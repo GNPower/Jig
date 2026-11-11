@@ -48,10 +48,18 @@
 // the next PowerOn() leaves it halted (a power-on reset while unpowered is the
 // harness taking the board down); PowerOn() then runs the boot sequence.
 //
+// Contents at power-on: AddPowerOnContents gives bytes OCM holds when power
+// comes, as the partitions of a board file place them. PowerOn writes them
+// after it clears OCM and before it reads the boot device, so a Quad-SPI boot
+// copies the FSBL over whatever they cover. A reset while powered clears OCM
+// as step 1 says and writes nothing.
+//
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using Antmicro.Renode.Core;
+using Antmicro.Renode.Exceptions;
 using Antmicro.Renode.Logging;
 using Antmicro.Renode.Peripherals.CPU;
 using Antmicro.Renode.Peripherals.Memory;
@@ -108,7 +116,35 @@ namespace Antmicro.Renode.Peripherals.Jig.Xilinx
                 slcr.RebootStatus = 1u << (int)ZynqResetCause.PowerOn;
             }
             powered = true;
-            Run();
+            Run(true);
+        }
+
+        /// <summary>Bytes OCM holds at power-on: the file's contents from
+        /// <paramref name="offset"/> of the 256 KB OCM, which ocmLow holds up to
+        /// its size and ocmHigh after it. PowerOn writes them after it clears
+        /// OCM, in the order they were added.</summary>
+        public void AddPowerOnContents(long offset, string path)
+        {
+            if(ocmLow == null || ocmHigh == null)
+            {
+                throw new RecoverableException("The BootROM needs ocmLow and ocmHigh to load OCM at power-on");
+            }
+            if(!File.Exists(path))
+            {
+                throw new RecoverableException($"OCM contents not found: {path}");
+            }
+            var data = File.ReadAllBytes(path);
+            if(offset < 0 || offset + data.Length > ocmLow.Size + ocmHigh.Size)
+            {
+                throw new RecoverableException($"{data.Length} bytes at 0x{offset:X} run past the end of OCM (0x{ocmLow.Size + ocmHigh.Size:X} bytes)");
+            }
+            powerOnContents.Add((offset, data));
+        }
+
+        /// <summary>Forgets every AddPowerOnContents.</summary>
+        public void ClearPowerOnContents()
+        {
+            powerOnContents.Clear();
         }
 
         /// <summary>Power-down: the core halts and stays halted until PowerOn.</summary>
@@ -135,7 +171,7 @@ namespace Antmicro.Renode.Peripherals.Jig.Xilinx
         /// <summary>What the last run did, one line per step.</summary>
         public string BootLog => string.Join("\n", log);
 
-        private void Run()
+        private void Run(bool powerOn = false)
         {
             if(!powered)
             {
@@ -154,6 +190,10 @@ namespace Antmicro.Renode.Peripherals.Jig.Xilinx
             {
                 ocmLow?.ZeroAll();
                 ocmHigh?.ZeroAll();
+            }
+            if(powerOn && powerOnContents.Count > 0)
+            {
+                LoadPowerOnContents();
             }
             systemWatchdog?.DisableOutputs();
 
@@ -272,6 +312,24 @@ namespace Antmicro.Renode.Peripherals.Jig.Xilinx
             State = BootRomState.Booted;
             Note($"copied {length} bytes from flash 0x{headerOffset + sourceOffset:X7} to OCM 0x0, start at 0x{start:X8}");
             this.Log(LogLevel.Info, "Quad-SPI boot: image at 0x{0:X7}, {1} bytes, start 0x{2:X8}", headerOffset, length, start);
+        }
+
+        private void LoadPowerOnContents()
+        {
+            var lowSize = ocmLow.Size;
+            foreach(var (offset, data) in powerOnContents)
+            {
+                var inLow = (int)Math.Max(0, Math.Min(data.Length, lowSize - offset));
+                if(inLow > 0)
+                {
+                    ocmLow.WriteBytes(offset, data, 0, inLow);
+                }
+                if(inLow < data.Length)
+                {
+                    ocmHigh.WriteBytes(offset + inLow - lowSize, data, inLow, data.Length - inLow);
+                }
+            }
+            Note($"OCM loaded at power-on: {powerOnContents.Count} region(s)");
         }
 
         private bool RunRegisterInitialisation(byte[] header)
@@ -395,6 +453,7 @@ namespace Antmicro.Renode.Peripherals.Jig.Xilinx
         private readonly bool clearOcmOnReset;
         private readonly long searchLimit;
         private readonly List<string> log = new List<string>();
+        private readonly List<(long Offset, byte[] Data)> powerOnContents = new List<(long Offset, byte[] Data)>();
 
         private const uint BootModeJtag = 0;
         private const uint BootModeQuadSpi = 1;

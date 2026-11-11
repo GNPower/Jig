@@ -12,6 +12,7 @@ language
 library
 board_files
 programmable_logic
+storage
 jig_toml
 cli
 results
@@ -28,17 +29,23 @@ renode_defects
 
 {doc}`library`
 : Built-in functions, profiles and calendar time, and the members of
-  boards and their devices, peripherals and links, consoles (and what the
-  `vt100` layer renders for them), CAN links and CSP nodes.
+  boards and their devices, peripherals, links and partitions, consoles
+  (and what the `vt100` layer renders for them), CAN links and CSP nodes.
 
 {doc}`board_files`
 : Board files: devices and their families, peripherals, links, sensors,
-  protocol stacks, programmable logic, options, and the platform
-  description Jig writes from them.
+  partitions, protocol stacks, programmable logic, options, and the
+  platform description Jig writes from them.
 
 {doc}`programmable_logic`
 : The models, interrupts, reset domains and wiring Jig generates from a
-  Zynq-7000 block design, and what `ip` lines change.
+  Zynq-7000 block design, what `ip` lines change, and block RAM's initial
+  contents.
+
+{doc}`storage`
+: What a run's storage devices and device memories start with:
+  partitions, the formats `raw`, `littlefs` and `fat`, a system's storage
+  map, how Jig composes the bytes, and reading them back.
 
 {doc}`jig_toml`
 : The project file: board roots, the library path, Renode, defaults and

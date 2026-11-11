@@ -76,14 +76,16 @@ Prints each plan's tests and their tags without starting Renode.
 
 ```text
 jig boot BOARD [--mode MODE] [--seconds S] [--mips N]
-         [--option NAME=VALUE] [--storage NAME=IMAGE]
+         [--option NAME=VALUE] [--storage NAME=PATH]
          [--renode PATH] [--allow-untested-renode]
 ```
 
 Builds one board, boots it, copies its console to the terminal for `S`
 simulated seconds (5 by default), and prints how fast the emulation ran
-against real time. `--storage` starts a storage device from an image
-file.
+against real time. `--storage` repeats and takes any key a system's
+`storage` map takes: a partition, a storage device or a device memory
+(`--storage mcu.flash=cal.bin`), with a file, or a folder for a partition
+({doc}`storage`). Paths are relative to the current directory.
 
 ## jig check and jig boards
 
@@ -109,6 +111,27 @@ when a board has a problem. `jig boards` lists every board Jig can see
 and the root it came from, and under each its description and its options
 with their values and defaults.
 
+For a board's storage ({doc}`storage`), `jig check` reports:
+
+- each partition whose target isn't a storage peripheral or a memory of
+  the device, whose format no one ships or registers (a format the board's
+  plugin registers counts), or whose arguments the format refuses;
+- an `at` or `size` that isn't a multiple of the format's `block_size` or
+  `sector_size`, a partition that runs past its target's end, and two
+  partitions that overlap;
+- what composing each target the partitions write finds, with 0xFF for a
+  storage device and no boot image from the family: a missing `contents`,
+  a file larger than its partition, a folder the format can't build, and
+  a prebuilt volume the format refuses;
+- for an STM32 with a prebuilt ELF, each load segment that lands on a
+  partition in flash;
+- an SPI link on an STM32 controller with a second target, or a target at
+  a chip select other than 0, as a platform description problem.
+
+`jig check --contracts` builds the machine, which composes each storage
+device with its model's own erased value, and reports a storage error the
+build finds.
+
 ## jig platform
 
 ```text
@@ -122,6 +145,68 @@ defaults or the values `--option` gives, or writes it to `FILE` as UTF-8.
 author reads it to see what Renode loads; a Renode script can load the
 written file to run the board without Jig, as the ZedBoard example's
 `renode/two-boards.resc` does.
+
+## jig image
+
+```text
+jig image build BOARD [--option NAME=VALUE] [--boot MODE]
+                [--erased STORAGE=BYTE] [--storage NAME=PATH] [-o DIR]
+jig image ls IMAGE --board BOARD --partition NAME [--path PATH] [-r]
+             [--option NAME=VALUE]
+jig image extract IMAGE --board BOARD --partition NAME -o DIR
+                  [--option NAME=VALUE]
+```
+
+The storage a board's partitions describe, without Renode
+({doc}`storage`). `--option` repeats and sets a board option, as for
+`jig check`.
+
+`build` writes `DIR/<storage>.img` for each storage device of the board,
+in the current directory when `-o` is absent: the device's erased value,
+the family's boot image for the boot mode, then the partitions' contents,
+as a run composes them. It prints one line per image, such as `wrote
+out/flash0.img (4194304 bytes, erased 0xFF; partitions nor_lfs, nor_fat,
+nor_raw)` for the storage test fixture's board with `-o out`.
+
+```{list-table}
+:header-rows: 1
+:widths: 32 68
+
+* - Option
+  - Effect
+* - `--boot MODE`
+  - The boot mode whose family image goes under the partitions, such as
+    `qspi` for a Zynq-7000's Quad-SPI boot image; the board's default
+    otherwise.
+* - `--erased STORAGE=BYTE`
+  - A storage device's erased value, when its model's isn't 0xFF, such as
+    `--erased flash0=0x00`; repeatable.
+* - `--storage NAME=PATH`
+  - What a system's storage map would give: a folder or file for a
+    partition, or a file for a storage device or device memory, such as
+    `--storage files=fixtures/files`; paths from the current directory;
+    repeatable. It replaces the board file's `contents` for that partition.
+* - `-o DIR`
+  - The directory for the images.
+```
+
+The images are the bytes a run attaches, so they can also go onto a
+board. A board without storage devices prints so and exits 0. A device's
+own memories get no image.
+
+`ls` lists the entries directly inside `--path` (`/` by default) in a
+partition of IMAGE, one line each: kind, size (blank for a directory) and
+path; with `-r` it lists every entry under `--path`, depth first.
+`--path` counts from the partition's root with or without its leading
+slash: Git Bash turns an argument such as `/logs` into a Windows path
+before Jig sees it, so write `--path logs` there.
+
+`extract` copies every directory and file of the partition into DIR and
+refuses an entry whose path leads outside it; a partition without
+files, such as `raw`, goes to `DIR/<partition>.bin` whole. IMAGE is an
+image of the partition's target: a run's `<machine>/<storage>.img`, or for
+a partition on a device memory a dump of that memory from its first byte.
+Every error, such as a volume the format can't read, exits with 2.
 
 ## jig doctor
 

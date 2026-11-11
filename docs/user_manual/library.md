@@ -2,7 +2,8 @@
 
 A plan reaches the emulation only through the functions on this page and
 the handles its system declaration creates: one per board, link and node,
-and through a board, one per device, peripheral and link of the board.
+and through a board, one per device, peripheral, link and partition of the
+board.
 Each handle has a fixed set of members, listed here; board plugins can add
 members to the handles of their own boards. Members that wait are steps in
 the report, and every duration they take is in seconds of simulated time.
@@ -109,9 +110,9 @@ accepted at the end.
 * - `name`, `board`, `boot_mode`, `address`
   - Instance name, board name, boot mode, and the address of the board's
     `protocol csp(...)`.
-* - A device, peripheral or link name
-  - That part of the board: `a.zynq`, `a.flash0`, `a.console`, `a.can`
-    (below).
+* - A device, peripheral, link or partition name
+  - That part of the board: `a.zynq`, `a.flash0`, `a.console`, `a.can`,
+    `a.data` (below).
 * - `cli(command, settle: 0.3 s)`, `send(line)`,
     `expect(pattern, within: 10 s)`
   - The console members of the same names, on the board's one external
@@ -155,9 +156,9 @@ accepted at the end.
 ```
 
 A board's plugin can add members to its own boards, and only to those
-({doc}`../how_to/write_a_plugin`). A board whose device, peripheral or
-link has the name of a board member, or of a member its plugin adds, fails
-to load with both named.
+({doc}`../how_to/write_a_plugin`). A board whose device, peripheral, link
+or partition has the name of a board member, or of a member its plugin
+adds, fails to load with both named.
 
 ### Devices, peripherals and links of a board
 
@@ -180,7 +181,73 @@ to load with both named.
   - `name`, `kind`, `machine`, `external`. Its traffic is out of a plan's
     reach: an external CAN link joins the harness through a system link,
     and a link inside the board needs a probe, which a later release adds.
+* - A partition, `a.data`
+  - Its place, its bytes and, for a format with files, its files
+    ({ref}`partition-members`).
 ```
+
+(partition-members)=
+
+## Partitions
+
+A board file's `partition` lines name regions of its storage devices and
+of its device's own memories ({doc}`storage`). Each is a member of the
+board's handle, `a.nor_lfs`, with these members:
+
+```{list-table}
+:header-rows: 1
+:widths: 30 70
+
+* - Member
+  - Meaning
+* - `name`, `format`, `at`, `size`
+  - The partition's name; its format's name (`raw`, `littlefs`, `fat` or
+    a plugin's); its offset in its storage device or memory; its size in
+    bytes.
+* - `bytes()`
+  - The whole region as it stands, `size` bytes.
+* - `files(path = "/")`
+  - The entries directly inside the directory `path`, sorted by name.
+* - `walk()`
+  - Every entry under the root, depth first, each directory's entries
+    sorted by name.
+* - `read(path)`
+  - A file's bytes.
+* - `exists(path)`
+  - Whether a file or a directory is at `path`.
+* - `stat(path)`
+  - The entry at `path`.
+```
+
+An entry is a record of `path`, from the volume's root
+(`"/config/settings.txt"`), `name` (`"settings.txt"`), `kind`, `"file"` or
+`"dir"`, and `size` in bytes, 0 for a directory:
+
+```jig
+for entry in dut.nor_lfs.files("/config") {
+    log "{entry.kind} {entry.path} {entry.size}"
+}
+check dut.nor_lfs.read("/boot.txt") == "boot count 1\n".encode()
+check dut.nor_raw.bytes().startswith(read_file("nor_raw.bin"))
+```
+
+Every call reads the bytes again: a storage device's partition from the
+device's image file in the run directory, which its model writes as each
+program or erase completes, a device memory's from the machine. So a
+member sees what the firmware wrote up to the step it runs in. A FAT
+volume can show a file the firmware is halfway through writing; read one
+once the firmware is idle.
+
+- A path with nothing there or with the wrong kind of entry (`read` of a
+  directory, `files` of a file), and bytes the format can't read as a
+  volume (a region the firmware hasn't formatted yet, a littlefs
+  superblock that disagrees with the partition's arguments), fail the
+  step with a `PartitionError`, a `JigError`: the test ends with FAIL, and
+  `try` can catch it.
+- `files`, `walk`, `read`, `exists` and `stat` on a format without files
+  (`raw`), and a path that isn't text, are plan errors: the test ends
+  with ERROR, which `try` does not catch.
+- littlefs compares paths as written, FAT ignores case.
 
 ## Consoles
 

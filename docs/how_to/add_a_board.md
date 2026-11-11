@@ -76,17 +76,23 @@ Renode's platform description for the chip, such as
 `"platforms/cpus/stm32l072.repl"`.
 
 Chips on the board are peripherals wired by links. A NOR flash on the
-Zynq-7000's Quad-SPI controller, kept in an image file between resets:
+Zynq-7000's Quad-SPI controller, kept in an image file between resets,
+needs a model that implements Jig's storage contract
+({doc}`write_a_model`). Renode's own flash models, such as
+`SPI.Micron_MT25Q`, don't, so the board names a model of its own in
+`models`. Jig's test fixture `tests/fixtures/models/SpiNorFlash.cs` is one
+to start from:
 
 ```jig
 board "my-zynq-board" {
+    models: ["models/NorFlash.cs"]
     storage: [flash0]
     device zynq: zynq7000(part: "XC7Z020-CLG484",
                           clocks: {cpu_3x2x: 333.333333 MHz,
                                    cpu_1x: 111.111111 MHz}) {
         firmware: {app: "build/app.elf"}
     }
-    peripheral flash0: "SPI.Micron_MT25Q" (size: 32 MiB)
+    peripheral flash0: "MyBoard.NorFlash" (size: 32 MiB)
     link boot_flash: qspi(controller: zynq.qspi, targets: {0: flash0})
 }
 ```
