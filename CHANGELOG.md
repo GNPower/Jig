@@ -43,11 +43,11 @@ Breaking changes open with **Breaking** under Changed.
   Folders are built once per content and kept in Jig's cache.
 - A device's own memories: an STM32's `flash`, written once before the
   first boot, and its `sram` or `sram1` to `sram5`, written at every
-  power-on; a Zynq-7000's `ocm`, which the BootROM model loads at every
+  power-on. A Zynq-7000's `ocm`, which the BootROM model loads at every
   power-on after it clears OCM, and the block RAM of its programmable
   logic, which loads each time the PL is configured. An ELF segment that
-  lands on a partition in an STM32's flash stops the boot, naming both;
-  a segment's extent is its `p_memsz`, since Renode's `LoadELF` writes
+  lands on a partition in an STM32's flash stops the boot, naming both.
+  A segment's extent is its `p_memsz`, since Renode's `LoadELF` writes
   zeros past the bytes from the file.
 - Partitions are members of plan board handles (`dut.data`), with `name`,
   `format`, `at`, `size`, `bytes()` and, for littlefs and fat, `files()`,
