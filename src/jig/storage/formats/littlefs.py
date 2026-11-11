@@ -133,7 +133,7 @@ class LittleFs:
             volume = _write(tree, settings, settings.block_count, erased)
         except _NoSpaceError:
             raise ConfigError(_too_big(folder, tree, settings)) from None
-        return bytes(volume.context.buffer) + bytes([erased]) * (size - len(volume.context.buffer))
+        return bytes(volume.image) + bytes([erased]) * (size - len(volume.image))
 
     def check(self, image: bytes, arguments: Mapping[str, Any]) -> list[str]:
         """Each superblock field of a prebuilt image that differs from the
@@ -292,8 +292,22 @@ class _NoSpaceError(Exception):
     """The volume filled before the folder was written."""
 
 
-def _write(tree: Source, settings: _Settings, block_count: int, erased: int) -> LittleFS:
-    """A volume of ``block_count`` blocks holding the folder, unmounted."""
+@dataclass(frozen=True)
+class _Volume:
+    """A volume ``_write`` built and unmounted: its blocks, and how many of
+    them littlefs uses."""
+
+    image: bytearray
+    used: int
+
+
+def _write(tree: Source, settings: _Settings, block_count: int, erased: int) -> _Volume:
+    """A volume of ``block_count`` blocks holding the folder.
+
+    The count of used blocks is taken before the unmount: ``lfs_unmount``
+    frees the caches that ``lfs_fs_size`` reads through and leaves their
+    pointers, so a size query on an unmounted volume writes into freed heap
+    memory. glibc and macOS catch that later as an abort."""
     blocks = _Blocks(bytearray([erased]) * (settings.block_size * block_count), erased)
     volume = LittleFS(context=blocks, mount=False, **settings.config(block_count))
     where = "/"
@@ -313,6 +327,7 @@ def _write(tree: Source, settings: _Settings, block_count: int, erased: int) -> 
                 handle.close()
             if written != len(data):
                 raise ConfigError(f"littlefs: {where}: wrote {written} of {len(data)} bytes")
+        used = volume.used_block_count
         volume.unmount()
     except LittleFSError as error:
         if error.code == LittleFSError.Error.LFS_ERR_NOSPC:
@@ -320,7 +335,7 @@ def _write(tree: Source, settings: _Settings, block_count: int, erased: int) -> 
         raise ConfigError(f"littlefs: {where}: {error}") from error
     except OSError as error:  # littlefs-python turns some codes into OSError subclasses
         raise ConfigError(f"littlefs: {where}: {error}") from error
-    return volume
+    return _Volume(blocks.buffer, used)
 
 
 def _too_big(folder: Path, tree: Source, settings: _Settings) -> str:
@@ -333,7 +348,7 @@ def _too_big(folder: Path, tree: Source, settings: _Settings) -> str:
     count = max(count, 2 * settings.block_count)
     for _ in range(4):
         try:
-            used = _write(tree, settings, count, ERASED).used_block_count
+            used = _write(tree, settings, count, ERASED).used
         except _NoSpaceError:
             count *= 2
             continue

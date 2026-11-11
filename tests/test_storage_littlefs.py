@@ -4,6 +4,7 @@ reading files back."""
 from __future__ import annotations
 
 import shutil
+import weakref
 from pathlib import Path
 from typing import Any
 
@@ -237,6 +238,34 @@ def test_a_folder_too_big_for_the_partition_says_what_it_takes(
     roomy = littlefs.arguments({**FIRMWARE, "block_count": taken + 8}, (taken + 8) * 4 * KIB)
     image = littlefs.build(folder, (taken + 8) * 4 * KIB, roomy)
     assert mounted(image).used_block_count == taken
+
+
+def test_no_volume_is_asked_its_size_after_its_unmount(
+    littlefs: LittleFs, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # lfs_unmount frees the caches lfs_fs_size reads through, so a size query
+    # after it writes into freed heap memory: glibc and macOS abort later, at
+    # whatever allocation finds the damage, and Windows carries on.
+    unmounted: weakref.WeakSet[LittleFS] = weakref.WeakSet()
+    unmounts: list[int] = []
+    unmount = LittleFS.unmount
+    used_block_count = LittleFS.used_block_count.fget
+
+    def tracked_unmount(volume: LittleFS) -> int:
+        unmounted.add(volume)
+        unmounts.append(1)
+        return unmount(volume)
+
+    def guarded_used_block_count(volume: LittleFS) -> int:
+        assert volume not in unmounted, "a size query on an unmounted volume"
+        return used_block_count(volume)
+
+    monkeypatch.setattr(LittleFS, "unmount", tracked_unmount)
+    monkeypatch.setattr(LittleFS, "used_block_count", property(guarded_used_block_count))
+    folder = make_tree(tmp_path / "full", files(40, 3, (5000, 9000)))
+    with pytest.raises(ConfigError, match=r"takes \d+ blocks of 4096 bytes"):
+        littlefs.build(folder, 64 * KIB, littlefs.arguments(FIRMWARE, 64 * KIB))
+    assert unmounts  # _too_big built and unmounted a roomier volume
 
 
 def test_a_folder_is_a_folder(littlefs: LittleFs, tmp_path: Path) -> None:
