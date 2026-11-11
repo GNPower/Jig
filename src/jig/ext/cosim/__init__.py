@@ -42,7 +42,7 @@ from pathlib import Path
 from jig import artifacts, project
 from jig.errors import ConfigError, ToolchainError
 from jig.renode.discover import RenodeInstall
-from jig.renode.session import RenodeSession
+from jig.renode.session import RenodeSession, monitor_path
 from jig.renode.toolchain import RENODE_VERSION
 from jig.system.boards import CosimSpec
 
@@ -385,4 +385,4 @@ def attach(session: RenodeSession, spec: CosimSpec, path: Path, workdir: Path) -
     refuses to change it once the library is loaded."""
     if spec.context:
         session.execute(f'{spec.peripheral} SimulationContextLinux "{spec.context}"')
-    session.execute(f"{spec.peripheral} SimulationFilePathLinux @{path.as_posix()}")
+    session.execute(f"{spec.peripheral} SimulationFilePathLinux {monitor_path(path)}")

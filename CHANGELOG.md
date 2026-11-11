@@ -9,6 +9,96 @@ Breaking changes open with **Breaking** under Changed.
 
 ## [Unreleased]
 
+### Added
+
+- Partitions in board files: `partition NAME: FORMAT(on: ..., at: ...,
+  size: ..., contents: ...)` names a region of a storage peripheral
+  (`on: flash0`) or of a memory of the device (`on: mcu.flash`), in bytes
+  from its first byte, with the format's arguments repeating the
+  firmware's mount settings and `contents`, a file or folder relative to
+  the board file, filling it. Partitions sit at a board's top level or
+  under `if`, may not overlap or run past their target, and line up with
+  the format's `block_size` or `sector_size`. The user manual's storage
+  page describes them.
+- The formats `raw` (a file placed as it is), `littlefs` (built and read
+  with littlefs-python 0.19, littlefs 2.11, on-disk versions 2.0 and 2.1:
+  `block_size`, `block_count`, `read_size`, `prog_size`, `name_max`,
+  `file_max`, `attr_max`, `disk_version`) and `fat` (FAT12, FAT16 and
+  FAT32, which Jig writes from Microsoft's FAT32 File System
+  Specification 1.03: `fat_type`, `sector_size`, `sector_count`,
+  `cluster_size`, `label`, `volume_id`, `time`). One folder and one set
+  of arguments give the same bytes on every host, and a prebuilt volume
+  given as a partition's contents is checked against the arguments.
+- A system's `storage` map takes partitions, storage devices and device
+  memories in quotes (`"mcu.flash"`) as keys, and files, folders for a
+  partition, or maps from offset to file (`{0: "boot.bin", 0x100000:
+  "app.bin"}`) as values, relative to the plan. A system's source for a
+  partition replaces the board file's `contents`.
+- Composition: before a device boots, each storage device's image starts
+  at its model's erased value, takes the system's whole-device file or
+  the family's boot image (a Zynq-7000's Quad-SPI image) at byte 0, then
+  each partition's contents in the board file's order and each file at an
+  offset. A byte written twice, or contents that land on bytes of the
+  base image that aren't erased, stop the run with every problem named.
+  Folders are built once per content and kept in Jig's cache.
+- A device's own memories: an STM32's `flash`, written once before the
+  first boot, and its `sram` or `sram1` to `sram5`, written at every
+  power-on. A Zynq-7000's `ocm`, which the BootROM model loads at every
+  power-on after it clears OCM, and the block RAM of its programmable
+  logic, which loads each time the PL is configured. An ELF segment that
+  lands on a partition in an STM32's flash stops the boot, naming both.
+  A segment's extent is its `p_memsz`, since Renode's `LoadELF` writes
+  zeros past the bytes from the file.
+- Partitions are members of plan board handles (`dut.data`), with `name`,
+  `format`, `at`, `size`, `bytes()` and, for littlefs and fat, `files()`,
+  `walk()`, `read(path)`, `exists(path)` and `stat(path)`, each reading
+  the device's image file or the machine between steps. A missing path or
+  a volume the format can't read fails the step.
+- `jig image build BOARD [--option] [--boot] [--erased] [--storage] [-o]`
+  writes each storage device's composed image without Renode, with
+  `--storage NAME=PATH` giving what a system's storage map would;
+  `jig image ls [-r]` and `jig image extract` list and copy the files of a
+  partition of an image, such as a run's `<machine>/flash0.img`.
+- `jig check` checks each partition's target, format, arguments,
+  alignment, bounds and overlaps, then composes what the board's
+  partitions write: missing contents, files larger than their partition,
+  folders the format can't build, prebuilt volumes it refuses, and an
+  STM32's prebuilt ELF segments over a partition in flash.
+- `IStorage.ErasedValue`, a C# default interface member returning 0xFF:
+  a storage model whose blank cells read another value declares its own.
+  The contract query reports it, and a run composes with it.
+- For plugins, `api.storage_format(name, format)` adds a format for the
+  plugin's board alone, and `jig.plugin` re-exports `StorageFormat`,
+  `FileSystemView` and `Entry`. `JIG_PLUGIN_API` stays 2. The Zynq-7000
+  models gain `Zynq7000_BootROM.AddPowerOnContents` and
+  `Zynq7000_PlDomain.AddInitialContents`, and `jig.testing`'s
+  `FakeMachine` reads partitions from `<storage>.img` or `memories`.
+
+### Changed
+
+- **Breaking**: a board's `storage` peripherals get an image file for
+  every family, where Jig 0.2 attached them for the Zynq-7000 family
+  alone, so an STM32 board's `storage` setting now takes effect and each
+  peripheral's model must implement `IStorage`.
+- An SPI peripheral on one of Renode's STM32 SPI controllers (`STM32SPI`,
+  `STM32H7_SPI`, `STM32WBA_SPI`) is registered `@ spi1`, with no address:
+  Renode refused the `@ spi1 0` Jig 0.2 wrote. Such a controller takes
+  one target, at chip select 0, and `jig check` reports a second target
+  or another chip select.
+- For plugins and drivers, `MachineConfig.storage_sources` holds the
+  system's whole storage map beside `storage_images`, which keeps its 0.2
+  meaning, the system's files for whole storage devices.
+  `MachineConfig.memory_images` holds what each memory of the device
+  receives, and a family's driver may define `memories`, `base_images`
+  and `single_target`.
+- `jig boot --storage NAME=PATH` takes any key a system's `storage` map
+  takes, where Jig 0.2 took storage devices only.
+- Monitor commands name every file in double quotes, so a run directory,
+  a cache or a board whose path holds a space works: Renode's monitor
+  ends an `@path` token at the first space.
+- Two new required dependencies: littlefs-python 0.19 (BSD-3-Clause),
+  which bundles littlefs 2.11 (BSD-3-Clause), and pyfatfs 1.1 (MIT).
+
 ## [0.2.0a1] - 2026-11-01
 
 ### Added

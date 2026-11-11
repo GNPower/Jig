@@ -46,6 +46,26 @@ _ABORTED = re.compile(r"(?P<machine>[\w.-]+): This machine has aborted")
 _ERROR = re.compile(r"\[ERROR\]")
 
 
+def monitor_path(path: Path | str) -> str:
+    """``path`` as a file argument of a monitor command: absolute, with
+    forward slashes, in double quotes, as ``AttachImage "C:/my runs/a.img"``.
+
+    The monitor ends an ``@path`` token at the first space, so
+    ``@C:/my runs/a.img`` reaches the command as ``C:/my``. A quoted string
+    reaches it whole, and Renode 1.17.0's ``LoadPlatformDescription`` and
+    ``LoadELF`` take one, as do Jig's ``AttachImage``, ``AddPowerOnContents``,
+    ``AddInitialContents``, ``RunRegisterProgram`` and ``ConfigureFromJtag``.
+    Such a string can't hold a double quote or a control character, or end on
+    a backslash, so a path that does is a ConfigError naming it."""
+    text = Path(path).absolute().as_posix()
+    if '"' in text or text.endswith("\\") or any(ord(c) < 0x20 for c in text):
+        raise ConfigError(
+            f"Renode's monitor can't take the path {text!r}: a path Jig hands it may not hold "
+            "a double quote or a control character, or end on a backslash"
+        )
+    return f'"{text}"'
+
+
 @dataclass(frozen=True)
 class ModelTiming:
     """How long one model set took to compile."""

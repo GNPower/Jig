@@ -48,10 +48,12 @@ needs the peripheral it names to implement one interface from
   - Interface and members
   - What plans do with it
 * - `storage`
-  - `IStorage`: `Size` in bytes, and `AttachImage(path)`, which makes a
-    raw image file the device's contents and writes every change back to
-    it
-  - Start a run from an image file; keep writes across resets
+  - `IStorage`: `Size` in bytes; `ErasedValue`, the byte an erased cell
+    holds, 0xFF unless the model says otherwise; and `AttachImage(path)`,
+    which makes a raw image file the device's contents and writes every
+    change back to it
+  - Start a run from the image Jig composes from partitions and a
+    system's files; keep writes across resets; read partitions back
 * - Every peripheral off `backup_supply`
   - `IPowerCycled`: `PowerCycle()`, which returns every volatile register
     to its power-up value and keeps non-volatile contents and external
@@ -80,6 +82,32 @@ each sensor's channel is below the converter's `ChannelCount`. A missing
 method shows up there, before a plan reaches it. Each interface's
 documentation comments in `jig/models/Contracts` give the units, the
 ranges and what survives a reset or a power cycle.
+
+## A storage model's erased value
+
+Before a run boots, Jig fills a storage device's image with the value an
+erased byte holds, then places the board's partitions and the system's
+files over it ({doc}`../user_manual/storage`). The value is the model's
+`IStorage.ErasedValue`. The interface gives it a default body that
+returns 0xFF, NOR flash's erased value, so a model written before the
+member existed compiles unchanged and reports 0xFF.
+
+A model of a memory whose blank cells read another value declares the
+member itself, here for cells that read 0x00:
+
+```csharp
+public byte ErasedValue => 0x00;
+```
+
+Jig reads the value through the contract query, `machine JigContracts
+"<peripheral>"`, whose answer holds `IStorage=<Size> ErasedValue=<n>`,
+once per storage device something writes, after the platform loads. It can't
+ask the monitor for the property: a model that keeps the default doesn't
+have the member on its class, so the monitor finds nothing to call. A
+storage device that nothing writes isn't queried. `jig check` and `jig
+image build` compose without Renode and so use 0xFF; `jig image build
+--erased flash0=0x00` gives another value, and `jig check --contracts`
+composes with each model's own.
 
 ## Write the model
 

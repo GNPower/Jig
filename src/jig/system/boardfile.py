@@ -19,7 +19,12 @@ A device's family and the layers of a stack are read from the text: in
 plugin that defines it has loaded yet, and in ``interface can0: csp over cfp``
 each layer is a name with optional arguments. ``Board`` checks them against
 the families and layers Jig knows once the board's plugin has loaded
-(``jig.system.socs.driver_for``, ``jig check``).
+(``jig.system.socs.driver_for``, ``jig check``). A partition's format is
+read the same way (``partition data: littlefs(on: flash0, ...)``), so a
+format the plugin registers counts; ``jig.storage.layout`` resolves it. A
+partition's name follows the declarations' name rules but is no value in
+expressions, so it may share its name with the option that picks its
+contents.
 """
 
 from __future__ import annotations
@@ -70,6 +75,7 @@ from jig.system.model import (
     MemorySpec,
     ModelSpec,
     OptionSpec,
+    PartitionSpec,
     Peripheral,
     PeripheralInput,
     PeripheralOutput,
@@ -310,8 +316,9 @@ class _Evaluation:
         peripherals = [m for m in members if type(m).__name__ == "PeripheralDecl"]
         links = [m for m in members if type(m).__name__ == "LinkDecl"]
         sensors = [m for m in members if type(m).__name__ == "SensorDecl"]
+        partitions = [m for m in members if type(m).__name__ == "PartitionDecl"]
         settings = [m for m in members if type(m).__name__ == "Setting"]
-        self._declare_names(devices, peripherals, links, sensors)
+        self._declare_names(devices, peripherals, links, sensors, partitions)
         values = self._settings(settings)
         self._declare_constructors()
         if len(devices) > 1:
@@ -328,10 +335,16 @@ class _Evaluation:
         board_links = [self._link(link) for link in links]
         parts = self._wire(device, parts, board_links)
         sensor_specs = [self._sensor(s, parts, device) for s in sensors]
-        return self._compat(values, device, parts, board_links, sensor_specs)
+        partition_specs = [self._partition(p, device, values) for p in partitions]
+        return self._compat(values, device, parts, board_links, sensor_specs, partition_specs)
 
     def _declare_names(
-        self, devices: list[Any], peripherals: list[Any], links: list[Any], sensors: list[Any]
+        self,
+        devices: list[Any],
+        peripherals: list[Any],
+        links: list[Any],
+        sensors: list[Any],
+        partitions: list[Any],
     ) -> None:
         taken: dict[str, str] = {}
         reserved = {
@@ -345,11 +358,15 @@ class _Evaluation:
             ("peripheral", peripherals),
             ("link", links),
             ("sensor", sensors),
+            ("partition", partitions),
         ):
             for item in items:
                 where = self.where(item)
                 name = item.name
-                if name in reserved:
+                # A partition is no value in the board file's expressions, so
+                # it may share a name with an option, the option that picks
+                # its contents: option data, partition data(... contents: data).
+                if name in reserved and kind != "partition":
                     raise ConfigError(f"{where}: {kind} {name}: {name} is {reserved[name]}")
                 if name in taken:
                     raise ConfigError(
@@ -865,6 +882,69 @@ class _Evaluation:
             initial = float(initial)
         return SensorSpec(node.name, channel, initial, where)
 
+    # ------------------------------------------------------------- partitions
+
+    def _partition(self, node: Any, device: Device, values: Mapping[str, Any]) -> PartitionSpec:
+        """``partition NAME: FORMAT(on:, at:, size:, contents:, ...)``. The
+        format is read from the text, as a device's family is: a format
+        the board's plugin registers is known only once the plugin loads, so
+        such a name is checked when the board's storage is composed. A
+        format Jig ships has its arguments checked here."""
+        from jig.storage import formats
+
+        where = self.where(node)
+        what = f"{where}: partition {node.name}"
+        form = _call_form(node.value)
+        if form is None or form[1] is None:
+            raise ConfigError(
+                f"{what}: a partition is FORMAT(on: ..., at: ..., size: ...), such as "
+                "raw(on: flash0, at: 0, size: 64 KiB)"
+            )
+        name, call = form
+        arguments = self._arguments(call, where, name)
+        on = arguments.pop("on", None)
+        at = arguments.pop("at", None)
+        size = arguments.pop("size", None)
+        contents = arguments.pop("contents", None)
+        if isinstance(on, PeripheralRef):
+            storage = [ref.peripheral for ref in values.get("storage", [])]
+            if on.peripheral not in storage:
+                listed = ", ".join([*storage, on.peripheral])
+                raise ConfigError(
+                    f"{what}: {on.peripheral} is not on the board's storage list, so Jig "
+                    f"attaches no image to it: storage: [{listed}]"
+                )
+        elif isinstance(on, InternalRef):
+            self._known_device(on.device, device, where)
+        else:
+            raise ConfigError(
+                f"{what}: on is a storage peripheral (flash0) or a memory of the device "
+                f"({device.name}.flash), not {show(on)}"
+            )
+        for key, value, least in (("at", at, 0), ("size", size, 1)):
+            if not isinstance(value, int) or isinstance(value, bool) or value < least:
+                raise ConfigError(
+                    f"{what}: {key} is a whole number of bytes, such as 64 KiB, not {show(value)}"
+                )
+        assert isinstance(at, int) and isinstance(size, int)
+        source = None
+        if contents is not None:
+            # Beside the board file, as its repl fragments and build sources are.
+            directory = self.file.directory
+            source = (directory / _text(contents, f"{what}: contents")).resolve()
+        shipped = formats.builtin()
+        if name in shipped:
+            try:
+                shipped[name].arguments(arguments, size)
+            except ConfigError as exc:
+                raise ConfigError(f"{what}: {name}: {exc}") from None
+        elif values.get("plugin") is None:
+            raise ConfigError(
+                f"{what}: no storage format {name!r} (known: {', '.join(sorted(shipped))}; "
+                "a board's plugin adds others)"
+            )
+        return PartitionSpec(node.name, name, on, at, size, arguments, source, where)
+
     # ------------------------------------------------------------ constructors
 
     def _path(self, value: Any, base: Path, what: str) -> Path:
@@ -917,6 +997,7 @@ class _Evaluation:
         parts: Mapping[str, Peripheral],
         links: list[Link],
         sensors: list[SensorSpec],
+        partitions: list[PartitionSpec],
     ) -> Board:
         file = self.file
         root: Path = values["root"]
@@ -983,6 +1064,7 @@ class _Evaluation:
             option_values=dict(self.option_values),
             workdir=self.workdir,
             cosim=tuple(_cosim_specs(device, root)),
+            partitions=tuple(partitions),
             file=file,
         )
 

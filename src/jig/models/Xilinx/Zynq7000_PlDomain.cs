@@ -6,9 +6,11 @@
 // Block RAM. Every system reset resets the PL and the FSBL has to configure it
 // again (UG585 26.2, Table 26-1). Block RAM therefore loses its contents on a
 // reset, when PROG_B clears the configuration, and when a new configuration
-// loads (block RAM takes the bitstream's initial values; this model reads 0,
-// as for a design that sets none). Renode keeps RAM across a machine reset, so
-// the PL memories are registered here (AddMemory) and cleared at those points.
+// loads (block RAM takes the bitstream's initial values). Renode keeps RAM
+// across a machine reset, so the PL memories are registered here (AddMemory)
+// and cleared at those points. A configuration then loads what
+// AddInitialContents gave each memory, standing in for the bitstream's
+// initial values; a memory given none reads 0, as for a design that sets none.
 //
 // AXI slaves held in reset. A slave behind an interconnect whose reset is
 // asserted (SLCR FPGA_RST_CTRL FPGAn_OUT_RST drives FCLK_RESETn_N into
@@ -24,6 +26,7 @@
 // PL peripheral models reset with the machine like any other peripheral.
 //
 using System.Collections.Generic;
+using System.IO;
 using Antmicro.Renode.Core;
 using Antmicro.Renode.Exceptions;
 using Antmicro.Renode.Logging;
@@ -47,6 +50,10 @@ namespace Antmicro.Renode.Peripherals.Jig.Xilinx
                 {
                     this.Log(LogLevel.Debug, configured ? "PL configured: block RAM takes its initial values" : "PL configuration cleared");
                     ClearMemories();
+                    if(configured)
+                    {
+                        LoadInitialContents();
+                    }
                 };
             }
         }
@@ -58,6 +65,34 @@ namespace Antmicro.Renode.Peripherals.Jig.Xilinx
             {
                 memories.Add(memory);
             }
+        }
+
+        /// <summary>Bytes a block RAM takes each time the PL is configured, as a
+        /// bitstream's initial values: the file's contents from
+        /// <paramref name="offset"/>. The memory must be one AddMemory
+        /// registered; contents load in the order they were added.</summary>
+        public void AddInitialContents(MappedMemory memory, long offset, string path)
+        {
+            if(!memories.Contains(memory))
+            {
+                throw new RecoverableException($"{machine.GetLocalName(memory)} is not block RAM of the PL (AddMemory registers it)");
+            }
+            if(!File.Exists(path))
+            {
+                throw new RecoverableException($"Block RAM contents not found: {path}");
+            }
+            var data = File.ReadAllBytes(path);
+            if(offset < 0 || offset + data.Length > memory.Size)
+            {
+                throw new RecoverableException($"{data.Length} bytes at 0x{offset:X} run past the end of {machine.GetLocalName(memory)} (0x{memory.Size:X} bytes)");
+            }
+            initialContents.Add((memory, offset, data));
+        }
+
+        /// <summary>Forgets every AddInitialContents.</summary>
+        public void ClearInitialContents()
+        {
+            initialContents.Clear();
         }
 
         /// <summary>Adds an AXI slave that hangs while FCLK_RESET[fclkReset]_N is asserted.</summary>
@@ -105,9 +140,18 @@ namespace Antmicro.Renode.Peripherals.Jig.Xilinx
             }
         }
 
+        private void LoadInitialContents()
+        {
+            foreach(var (memory, offset, data) in initialContents)
+            {
+                memory.WriteBytes(offset, data, 0, data.Length);
+            }
+        }
+
         private readonly IMachine machine;
         private readonly Zynq7000_SLCR slcr;
         private readonly ICPU cpu;
         private readonly List<MappedMemory> memories = new List<MappedMemory>();
+        private readonly List<(MappedMemory Memory, long Offset, byte[] Data)> initialContents = new List<(MappedMemory Memory, long Offset, byte[] Data)>();
     }
 }

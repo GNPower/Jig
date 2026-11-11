@@ -401,10 +401,7 @@ class Interpreter:
                 raise PlanError('board settings are given by name, e.g. (boot: "qspi")')
             settings = {arg.name: self._evaluate_now(arg.value, scope) for arg in declaration.args}
             definition = boards.find(unquote(declaration.definition.value))
-            storage = {
-                str(k): (self.program.main.path.parent / str(v)).resolve()
-                for k, v in dict(settings.pop("storage", None) or {}).items()
-            }
+            storage = _storage_map(settings.pop("storage", None), self.program.main.path.parent)
             boot = settings.pop("boot", None)
             mips = settings.pop("mips", None)
             power = _power_setting(settings.pop("power", None))
@@ -1626,6 +1623,39 @@ def _abort_kind(case: CaseReport) -> str:
     """How a block that stopped the plan counts: a failure of the system under
     test, unless the emulation itself failed."""
     return ABORT_FAILURE if case.error is None else abort_kind(case.error)
+
+
+def _storage_map(value: Any, base: Path) -> dict[str, Path | dict[int, Path]]:
+    """A board's ``storage`` setting in a system declaration, its paths
+    relative to the plan: keys are storage devices, partitions or device
+    memories in quotes (``"zynq.ocm"``); values a file or folder, or a map
+    from offset to file (``{0: "boot.bin", 0x100000: "app.bin"}``)."""
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise PlanError(f'storage is a map, such as {{flash0: "image.bin"}}, not {show(value)}')
+    found: dict[str, Path | dict[int, Path]] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise PlanError(
+                f"storage: {show(key)} is not a storage device, a partition or a device memory"
+            )
+        if isinstance(item, str) and item:
+            found[key] = (base / item).resolve()
+        elif isinstance(item, Mapping):
+            offsets: dict[int, Path] = {}
+            for offset, path in item.items():
+                if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+                    raise PlanError(f"storage {key}: {show(offset)} is not an offset in bytes")
+                if not isinstance(path, str) or not path:
+                    raise PlanError(f"storage {key}: at {offset:#x} names no file: {show(path)}")
+                offsets[offset] = (base / path).resolve()
+            found[key] = offsets
+        else:
+            raise PlanError(
+                f"storage {key}: a file or folder, or a map from offset to file, not {show(item)}"
+            )
+    return found
 
 
 def _power_setting(value: Any) -> str | None:

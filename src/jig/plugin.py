@@ -69,6 +69,12 @@ What a plugin registers:
     ``action(handle, ...)`` every ``every`` seconds (or once, as a coroutine,
     without ``every``) until the plan stops it or the block that started it
     ends, and returns a background handle (``.stop()``, ``.running``).
+``api.storage_format(name, format)``
+    A format partitions of this plugin's board can name (``partition cfg:
+    name(on: ..., at: ..., size: ...)``), such as a firmware's own key-value
+    store: an object with the methods of ``StorageFormat`` (``arguments``,
+    ``build``, ``check``, ``open``; ``jig.storage.formats``). A format Jig
+    ships keeps its name.
 
 The ``api`` also tells the plugin which board it serves: ``api.board`` (the
 board file, evaluated with each option's default), ``api.name``, ``api.root``
@@ -85,7 +91,8 @@ follows semantic versioning through ``API_VERSION``; a plugin may declare the
 version it was written for as ``JIG_PLUGIN_API = 2``, and Jig refuses to load
 it under another. Version 2 (jig-dsl 0.2) gave node kinds their link through
 ``start(system, link)`` instead of ``link`` and ``bus`` arguments and added
-``api.protocol``, and renamed ``api.soc_driver`` to ``api.device_family``.
+``api.protocol``, and renamed ``api.soc_driver`` to ``api.device_family``;
+jig-dsl 0.3 added ``api.storage_format`` within version 2.
 """
 
 from __future__ import annotations
@@ -124,6 +131,8 @@ from jig.lang.parser import KEYWORDS
 from jig.lang.values import Record, Regex
 from jig.renode.session import RenodeSession
 from jig.runtime.environment import Background, Profile
+from jig.storage import formats
+from jig.storage.formats import Entry, FileSystemView, StorageFormat
 from jig.system.boards import Board as BoardDefinition
 from jig.system.boards import SectionParser
 from jig.system.protocols import ArgumentParser, Layer, LayerKind
@@ -165,6 +174,8 @@ __all__ = [
     "CspId",
     "CspNode",
     "DslError",
+    "Entry",
+    "FileSystemView",
     "HkCodec",
     "HkContext",
     "HkDecoder",
@@ -188,6 +199,7 @@ __all__ = [
     "Regex",
     "RenodeSession",
     "SocDriver",
+    "StorageFormat",
     "SystemContext",
     "ToolchainError",
     "UartPort",
@@ -357,6 +369,17 @@ class PluginApi:
             ZynqHooks(qspi_image=qspi_image, images=images, boot_table=boot_table),
             "zynq_hooks",
         )
+
+    def storage_format(self, name: str, format: StorageFormat) -> None:
+        """A format partitions of this plugin's board can name."""
+        self._identifier(name, "storage format")
+        if name in formats.builtin():
+            raise self._fail(f"storage format {name!r} ships with Jig")
+        for method in ("arguments", "build", "check", "open"):
+            self._callable(
+                getattr(format, method, None), f"storage format {name}: {method}", self._owner
+            )
+        self._stage(self.staged.storage_formats, name, format, f"storage format {name!r}")
 
     def background(
         self,

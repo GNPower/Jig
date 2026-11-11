@@ -5,6 +5,7 @@ on the fixture models that implement them (tests/fixtures/models)."""
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
@@ -12,7 +13,7 @@ from jig import contracts
 from jig.contracts import Contracts, Problem
 from jig.errors import RenodeError
 
-from .bench import Bench
+from .bench import Bench, include
 
 
 @dataclass(frozen=True)
@@ -79,6 +80,13 @@ def test_parse_reads_the_query_reply() -> None:
     )
     assert contracts.parse(UART) == Contracts("Jig.Cadence.CadenceUART")
     assert contracts.parse("missing\n\n") is None
+
+
+def test_parse_reads_a_storage_devices_erased_value() -> None:
+    reply = "found Example.Mram IStorage=4096 ErasedValue=0 IPowerCycled\n\n"
+    assert contracts.parse(reply) == Contracts(
+        "Example.Mram", frozenset({"IStorage", "IPowerCycled"}), size=4096, erased=0
+    )
 
 
 @pytest.mark.parametrize("reply", ["", "found", "error: no such method", "found X IStorage=big"])
@@ -166,6 +174,7 @@ def test_the_query_reports_each_models_contracts(board: Bench) -> None:
     assert flash is not None and flash.type_name == "JigFixtures.SpiNorFlash"
     assert flash.interfaces == {"IStorage", "IPowerCycled", "ISpiNorFlash"}
     assert flash.size == 0x100000
+    assert flash.erased == 0xFF  # the interface's default: the model does not override it
     assert query("sysbus.spi0.flash0") == flash
     adc = query("adc")
     assert adc is not None and adc.interfaces == {"IAnalogInputs", "IPowerCycled"}
@@ -174,6 +183,47 @@ def test_the_query_reports_each_models_contracts(board: Bench) -> None:
     assert rtc is not None and rtc.interfaces == {"IRealTimeClock", "IPowerCycled"}
     assert query("uart0") == Contracts("Jig.Cadence.CadenceUART")
     assert query("spi0.flash9") is None
+
+
+# A storage model whose erased value is its own, as an MRAM's would be.
+ZERO_ERASED = """\
+using Antmicro.Renode.Core;
+using Antmicro.Renode.Peripherals.Jig.Contracts;
+
+namespace Antmicro.Renode.Peripherals.JigTests
+{
+    public sealed class ZeroErasedStorage : IStorage
+    {
+        public ZeroErasedStorage(IMachine machine)
+        {
+        }
+
+        public long Size => 0x1000;
+
+        public byte ErasedValue => 0x00;
+
+        public void AttachImage(string path)
+        {
+        }
+
+        public void Reset()
+        {
+        }
+    }
+}
+"""
+
+
+@pytest.mark.renode
+def test_a_model_reports_its_own_erased_value(bench: Bench, tmp_path: Path) -> None:
+    source = tmp_path / "ZeroErasedStorage.cs"
+    source.write_text(ZERO_ERASED, encoding="utf-8", newline="\n")
+    include(bench.session, [source])
+    bench.load("mram: JigTests.ZeroErasedStorage @ sysbus\n")
+    found = contracts.query(bench.session, bench.name, "mram")
+    assert found == Contracts(
+        "JigTests.ZeroErasedStorage", frozenset({"IStorage"}), size=0x1000, erased=0
+    )
 
 
 @pytest.mark.renode

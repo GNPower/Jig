@@ -116,11 +116,10 @@ system "title" {
   ({doc}`board_files`). Settings in parentheses: `boot`, one of the
   device's boot modes (`jtag` or `qspi` for a Zynq-7000, `flash` for an
   STM32); `mips`, the virtual CPU speed in millions of instructions per
-  second; `storage`, initial images for the board's storage peripherals,
-  as a map from peripheral to file relative to the plan; `power`, `"on"`
-  or `"off"`, over the board file's `power` setting; and the board's
-  options by name. `jig run --boot`, `--mips` and `--option NAME=VALUE`
-  override them for every board.
+  second; `storage`, a map of what the board's storage starts from;
+  `power`, `"on"` or `"off"`, over the board file's `power` setting; and
+  the board's options by name. `jig run --boot`, `--mips` and `--option
+  NAME=VALUE` override them for every board.
 
 `node`
 : A protocol endpoint the harness runs, with the layers below it after
@@ -159,6 +158,22 @@ Rules for links:
 Declarations come in any order: Jig declares the boards first, then the
 nodes, then the links, so a link can name a node declared below it.
 Different boards can share a system and a link.
+
+A board's `storage` setting is a map. Its keys name the board's
+partitions, its storage peripherals, and its device's memories in quotes;
+its values are files, folders for a partition, or maps from offset to
+file, with paths relative to the plan:
+
+```jig
+board a: "logger" (storage: {data: "fixtures/full-disk"})
+board b: "logger" (storage: {flash0: {0: "boot.bin", 0x100000: "app.bin"}})
+board c: "logger" (storage: {"mcu.flash": "calibration.bin"})
+```
+
+A folder for a partition is built in the partition's format, and a file
+or a map for a partition replaces the board file's `contents` for it. A
+file for a whole storage device or memory starts it from byte 0.
+{doc}`storage` describes each form and how Jig composes them.
 
 A plan without a system runs on one board named `dut`: the board given by
 `jig run --board NAME`, else the one in `[defaults] board` of `jig.toml`.

@@ -1,0 +1,102 @@
+# The storage end-to-end plan, on the board beside it: Jig builds four
+# partitions from tests/fixtures/storage before the run, the firmware prints
+# what it finds in each and writes /written.txt to the LittleFS volume on the
+# SPI NOR flash, and the plan reads that volume and the raw region back from
+# the flash's image.
+
+system "storage partitions" {
+    board dut: "stm32f4-storage"
+}
+
+const STORAGE = "../../storage"
+
+# firmware/main.c writes /written.txt with this text.
+const WRITTEN = "Written by the storage fixture's firmware at boot.\n" +
+    "At more than 256 bytes, the cache size, the file is too long for littlefs\n" +
+    "to keep in its directory. littlefs gives it a block of its own: the\n" +
+    "firmware erases the block with command 0x20, then programs it with 0x02.\n"
+
+# A file's line on the console: the volume, the path, the size in bytes, and
+# the contents with backslash, the double quote, \n, \r and \t escaped. The
+# fixture's files hold ASCII text only, which the firmware prints as it is.
+procedure file_line(volume, path, data) {
+    let size = len(data)
+    let shown = data.decode().replace("\\", "\\\\").replace("\"", "\\\"")
+    shown = shown.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+    return "{volume}: file {path} {size} \"{shown}\"\r\n"
+}
+
+setup {
+    dut.console.expect("storage fixture done\r\n", within: 10 s)
+}
+
+test "the LittleFS volume in the MCU's flash lists every file" {
+    let console = dut.console.text
+    check console contains "mcu_lfs: littlefs 2.1, 32 blocks of 4096 bytes\r\n"
+    check console contains "mcu_lfs: dir /notes\r\n"
+    for name in ["/hello.txt", "/notes/readme.txt"] {
+        check console contains file_line("mcu_lfs", name, read_file(STORAGE + "/mcu_lfs" + name))
+    }
+}
+
+test "the LittleFS volume on the NOR flash lists every file before and after the write" {
+    let console = dut.console.text
+    check console contains "nor_lfs: littlefs 2.1, 256 blocks of 4096 bytes\r\n"
+    let parts = console.split("nor_lfs: wrote /written.txt {len(WRITTEN)}\r\n")
+    check len(parts) == 2, "one line reports the write"
+    let before = parts[0]
+    let after = parts[1]
+    for listing in [before, after] {
+        check listing contains "nor_lfs: dir /config\r\n"
+        for name in ["/boot.txt", "/config/settings.txt"] {
+            check listing contains file_line("nor_lfs", name, read_file(STORAGE + "/nor_lfs" + name))
+        }
+    }
+    check not (before contains "/written.txt")
+    check after contains file_line("nor_lfs", "/written.txt", WRITTEN.encode())
+}
+
+test "the FAT volume lists every file under its long name" {
+    let console = dut.console.text
+    check console contains "nor_fat: FAT12, 2048 sectors of 512 bytes, label \"JIG FIXTURE\"\r\n"
+    check console contains "nor_fat: dir /Nested Folder\r\n"
+    let names = [
+        "/README.TXT",
+        "/A long file name.txt",
+        "/Nested Folder/A file in a nested folder, with a cluster chain.txt",
+    ]
+    for name in names {
+        check console contains file_line("nor_fat", name, read_file(STORAGE + "/nor_fat" + name))
+    }
+}
+
+test "the raw region's first 32 bytes reach the console" {
+    check dut.console.text contains "nor_raw: 4a 49 47 20 72 61 77 20 72 65 67 69 6f 6e 0d 0a " +
+        "00 01 02 03 10 20 40 7f 80 a5 c3 fe de ad be ef\r\n"
+}
+
+test "no step of the firmware failed" {
+    check not (dut.console.text contains "failed")
+}
+
+test "the plan reads /written.txt and the listing back from the NOR flash" {
+    check dut.nor_lfs.read("/written.txt") == WRITTEN.encode()
+    let listed = []
+    for entry in dut.nor_lfs.files() {
+        listed.append("{entry.kind} {entry.path} {entry.size}")
+    }
+    check listed == ["file /boot.txt 13", "dir /config 0", "file /written.txt {len(WRITTEN)}"]
+    let config = []
+    for entry in dut.nor_lfs.files("/config") {
+        config.append("{entry.kind} {entry.path} {entry.size}")
+    }
+    check config == ["file /config/settings.txt 30"]
+}
+
+test "the raw region reads back as the raw file, the rest of it erased" {
+    let raw = read_file(STORAGE + "/nor_raw.bin")
+    let region = dut.nor_raw.bytes()
+    check len(region) == 4 KiB
+    check region.startswith(raw)
+    check region.count(x"ff") == len(region) - len(raw), "only the raw file's bytes differ from 0xFF"
+}

@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from jig.errors import JigError
-from jig.renode.session import RenodeSession
+from jig.renode.session import RenodeSession, monitor_path
 
 FIXTURE_MODELS = Path(__file__).resolve().parents[1] / "fixtures" / "models"
 
@@ -44,11 +44,6 @@ def open_session(workdir: Path) -> RenodeSession:
     else:
         kwargs["install"] = discover.find_renode(explicit=None, config=None)
     return RenodeSession(**kwargs)
-
-
-def monitor_path(path: Path) -> str:
-    """A path as a monitor path token (``@`` and the path, spaces escaped)."""
-    return "@" + path.as_posix().replace(" ", "\\ ")
 
 
 def include(session: RenodeSession, paths: Iterable[Path]) -> None:

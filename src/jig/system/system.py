@@ -52,7 +52,7 @@ from typing import Any, Protocol, TypeVar
 from jig import project
 from jig.errors import ConfigError, ExpectTimeoutError, SimulationError
 from jig.ext import cosim
-from jig.renode.session import RenodeSession
+from jig.renode.session import RenodeSession, monitor_path
 from jig.runtime.environment import BackgroundRegistry
 from jig.runtime.recorder import Recorder
 from jig.runtime.scheduler import (
@@ -62,6 +62,10 @@ from jig.runtime.scheduler import (
     WaitTimeoutError,
     seconds_to_ns,
 )
+from jig.storage import layout as storage_layout
+from jig.storage import readback
+from jig.storage.compose import compose, write_regions
+from jig.storage.layout import Layout
 from jig.system import boards, generate, registry
 from jig.system.boards import Board
 from jig.system.renode_shim import RenodeConfig, find_renode, open_session
@@ -449,6 +453,7 @@ class Machine:
         self.booted = False  # the boot flow ran since the simulation started
         self.ports: dict[str, UartPort] = {}
         self.consoles: dict[str, Console] = {}
+        self._layout: Layout | None = None
 
     def __repr__(self) -> str:
         return f"<Machine {self.name} ({self.board.name}, {self.config.boot})>"
@@ -490,6 +495,24 @@ class Machine:
         session = self.simulation.session
         session.select_machine(self.name)
         return session.execute(command)
+
+    # ------------------------------------------------------------ storage
+
+    @property
+    def layout(self) -> Layout:
+        """The board's partitions and the system's storage map, resolved."""
+        if self._layout is None:
+            self._layout = storage_layout.for_board(self.board, self.driver, self.config.sources())
+        return self._layout
+
+    def partition_bytes(self, name: str) -> bytes:
+        """A partition's bytes as they stand: from its storage device's image
+        file, which the model writes as each program or erase completes, or
+        from the machine for a memory of the device."""
+        partition = self.layout.partition(name)
+        return readback.partition_bytes(
+            partition, self.config.workdir, self.simulation.session, self.name
+        )
 
     # ------------------------------------------------------------- inputs
 
@@ -613,8 +636,7 @@ class Machine:
                 files.append((f"register map source for {source.target}", source.module))
         for spec in self.board.cosim:
             files += [(f"co-simulation input of {spec.peripheral}", p) for p in spec.inputs]
-        for storage, image in self.config.storage_images.items():
-            files.append((f"image for {storage}", image))
+        files += storage_layout.files_needed(self.board, self.config.sources())
         if boot:
             files += [(f"firmware {role}", path) for role, path in self.board.firmware.items()]
             extra = getattr(self.driver, "required_files", None)
@@ -640,7 +662,8 @@ class Machine:
         description = self.config.workdir / "machine.repl"
         description.write_text(self.description(), encoding="utf-8", newline="\n")
         session.create_machine(self.name, own_time=own_time)
-        session.execute(f"machine LoadPlatformDescription @{description.as_posix()}")
+        session.execute(f"machine LoadPlatformDescription {monitor_path(description)}")
+        self._storage(session)
         self.driver.configure(self.config, session)
         for command in self.board.device.commands:
             session.execute(command)
@@ -663,6 +686,55 @@ class Machine:
                     text_view(port, interface.stack),
                     interface.prompt,
                 )
+
+    def _storage(self, session: RenodeSession) -> None:
+        """Compose what each storage device and each memory of the device
+        receives (``jig.storage.compose``) and attach each storage device's
+        image to its peripheral. The family's driver writes the memories'
+        regions (``MachineConfig.memory_images``) when their kind says."""
+        layout = self.layout
+        layout.raise_problems()
+        family = getattr(self.driver, "base_images", None)
+        bases: Mapping[str, Path] = family(self.config) if callable(family) else {}
+        workdir = self.config.workdir
+        session.select_machine(self.name)
+        for storage in self.board.storage:
+            image = readback.image_path(workdir, storage.name)
+            base = None if storage.name in layout.bases else bases.get(storage.name)
+            if base is not None or layout.written(storage.name):
+                erased, size = self._storage_model(session, storage.name, storage.peripheral)
+                composed = compose(
+                    layout,
+                    storage.name,
+                    erased=erased,
+                    size=size,
+                    base=base,
+                    base_label=f"the {self.board.soc} family's boot image",
+                )
+                composed.write(image)
+            session.execute(f"{storage.peripheral} AttachImage {monitor_path(image)}")
+        images = {}
+        for name, target in layout.targets.items():
+            if target.memory is None or not layout.written(name):
+                continue
+            composed = compose(layout, name, erased=target.memory.fill)
+            images[target.memory.name] = write_regions(composed, workdir / "memories")
+        self.config.memory_images = images
+
+    def _storage_model(self, session: RenodeSession, name: str, peripheral: str) -> tuple[int, int]:
+        """A storage peripheral's erased value and size, as its model reports
+        them (the IStorage contract)."""
+        from jig.contracts import STORAGE, query
+
+        found = query(session, self.name, peripheral)
+        if found is None:
+            raise ConfigError(f"{self.name}: storage {name}: no peripheral {peripheral}")
+        if STORAGE not in found.interfaces or found.size is None:
+            raise ConfigError(
+                f"{self.name}: storage {name}: {found.type_name} does not implement {STORAGE} "
+                "(the harness calls AttachImage)"
+            )
+        return (0xFF if found.erased is None else found.erased), found.size
 
     def _start(self, session: RenodeSession) -> None:
         """Boot the machine, or leave it unpowered (its initial power state)."""
@@ -729,7 +801,7 @@ class Simulation:
         *,
         boot: str | None = None,
         performance_mips: int | None = None,
-        storage: dict[str, Path] | None = None,
+        storage: Mapping[str, Any] | None = None,
         options: Mapping[str, Any] | None = None,
         power: str | None = None,
     ) -> Machine:
@@ -738,7 +810,10 @@ class Simulation:
         defaults, jig.toml's ``[defaults] options`` first for a board given
         by name), and the board file's ``workdir`` is the machine's
         directory. ``power`` (``on`` or ``off``) overrides the board's
-        ``power`` setting."""
+        ``power`` setting. ``storage`` is the system's storage map
+        (``jig.storage.layout``): storage devices, partitions and device
+        memories (``"mcu.flash"``) to a file or folder, or to files by
+        offset."""
         if self._started:
             raise ConfigError("boards must be added before the simulation starts")
         if name in self.machines:
@@ -764,11 +839,16 @@ class Simulation:
             raise ConfigError(
                 f"{name}: boot mode {mode!r} is not one of {', '.join(driver.boot_modes)}"
             )
-        for storage_name in storage or {}:
-            if storage_name not in {s.name for s in definition.storage}:
-                raise ConfigError(
-                    f"{name}: board {definition.name} has no storage {storage_name!r}"
-                )
+        sources = storage_layout.sources(storage)
+        try:
+            storage_layout.for_board(definition, driver, sources).raise_problems()
+        except ConfigError as exc:
+            raise ConfigError(f"{name}: {exc}") from None
+        whole = {
+            key: value
+            for key, value in sources.items()
+            if isinstance(value, Path) and key in {s.name for s in definition.storage}
+        }
         initial = power or definition.power_initial
         if initial not in boards.POWER_STATES:
             raise ConfigError(f"{name}: power must be on or off, not {initial!r}")
@@ -778,9 +858,10 @@ class Simulation:
             boot=mode,
             performance_mips=performance_mips or definition.performance_mips,
             workdir=self.workdir / name,
-            storage_images=dict(storage or {}),
+            storage_images=whole,
             options=dict(definition.option_values),
             hooks=plugins.hooks_for(definition),
+            storage_sources=sources,
         )
         machine = Machine(self, config, driver, initial)
         self.machines[name] = machine

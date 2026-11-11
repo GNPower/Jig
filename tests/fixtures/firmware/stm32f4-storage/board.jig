@@ -1,0 +1,41 @@
+# The storage end-to-end test: Renode's stock STM32F4 platform runs
+# firmware/main.c (built from source by firmware/build.py), which reads four
+# partitions Jig composes before the run and prints what it finds on USART2:
+# a LittleFS volume in the MCU's own flash, and a LittleFS volume, a FAT
+# volume and a raw region on a SPI NOR flash on SPI1. The firmware also writes
+# /written.txt to the LittleFS volume on the NOR flash. storage.jig checks the
+# console and reads the partitions back.
+board "stm32f4-storage" {
+    description: "STM32F4 storage fixture (LittleFS, FAT and raw partitions)"
+    root: "."
+    models: ["../../models/SpiNorFlash.cs"]
+    storage: [flash0]
+
+    device mcu: stm32(part: "STM32F407VG", mips: 16) {
+        firmware: build("firmware/build.py", sources: "firmware", output: "firmware.elf")
+        interface usart2: cli
+    }
+
+    peripheral flash0: "JigFixtures.SpiNorFlash" (size: 4 MiB)
+    link nor: spi(controller: mcu.spi1, targets: {0: flash0})
+    # Renode's STM32SPI never tells its target that a command ended, so the
+    # firmware drives the flash's chip select from PA4.
+    link nor_cs: gpio(from: mcu.pa[4], to: flash0.gpio[0])
+
+    external link console: uart(baud: 115200, members: [mcu.usart2])
+
+    # The firmware's layout (firmware/layout.h). The LittleFS arguments repeat
+    # its lfs_config. 1 MiB of 512-byte sectors holds fewer than the 4085
+    # clusters FAT16 starts at, so the FAT volume is FAT12.
+    partition mcu_lfs: littlefs(on: mcu.flash, at: 128 KiB, size: 128 KiB,
+                                block_size: 4 KiB, read_size: 16, prog_size: 16,
+                                contents: "../../storage/mcu_lfs")
+    partition nor_lfs: littlefs(on: flash0, at: 1 MiB, size: 1 MiB,
+                                block_size: 4 KiB, read_size: 16, prog_size: 16,
+                                contents: "../../storage/nor_lfs")
+    partition nor_fat: fat(on: flash0, at: 2 MiB, size: 1 MiB, fat_type: 12,
+                           sector_size: 512, label: "JIG FIXTURE", volume_id: 0x4A494721,
+                           contents: "../../storage/nor_fat")
+    partition nor_raw: raw(on: flash0, at: 3 MiB, size: 4 KiB,
+                           contents: "../../storage/nor_raw.bin")
+}

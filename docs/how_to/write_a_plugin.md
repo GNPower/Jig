@@ -263,12 +263,16 @@ report ({doc}`../api_reference/testing`).
   - A member that starts work beside the plan and returns a handle to stop
     it, such as a heartbeat packet the board's network expects every few
     seconds.
+* - `api.storage_format(name, format)`
+  - A format this board's `partition` lines can name, next to `raw`,
+    `littlefs` and `fat` ([A storage format](#a-storage-format)).
 ```
 
 `jig.plugin` also re-exports the types plugin code returns, raises or
-receives (`Record`, `Regex`, `Profile`, `DslError`, `ToolchainError`,
-`HkContext` and others) and `cached()`, for build steps whose output
-should be kept between runs. A board handle gives plugin code its
+receives (`Record`, `Regex`, `Profile`, `DslError`, `ConfigError`,
+`ToolchainError`, `HkContext`, `StorageFormat`, `FileSystemView`, `Entry`
+and others) and `cached()`, for build steps whose output should be kept
+between runs. A board handle gives plugin code its
 `definition` (the board, with `firmware`, `boot`, `storage` and
 `section("csp")` for its one device), `config`, `root`, `workdir`,
 `console` and `emit(kind, detail)`, which writes an event into the run's
@@ -304,3 +308,169 @@ Registered with `api.member("node", "announce", announce)`,
 `host.announce(a)` sends the packet, and `host.announce(b)` ends the test
 with ERROR and that message. A plugin's own node kind gets the same
 `NodeLink` in its handle's `start(system, link)`.
+
+## A storage format
+
+A firmware that keeps a partition in a layout of its own, a key-value
+store or a boot table, gets a format from its board's plugin. Partitions
+then name it as they name `littlefs`, and Jig builds it from a folder,
+checks prebuilt files against it and reads it back
+({doc}`../user_manual/storage`). This one stores each setting as a
+record: the name's length in 2 bytes, the name, the value's length in 4
+bytes and the value, and a name length of 0 after the last:
+
+```python
+import struct
+
+from jig.plugin import ConfigError, Entry, PluginApi
+
+NAME = struct.Struct("<H")
+VALUE = struct.Struct("<I")
+
+
+class Records:
+    name = "records"
+
+    def arguments(self, given, size):
+        if given:
+            raise ConfigError(f"records takes no arguments: {', '.join(given)}")
+        return {}
+
+    def build(self, folder, size, arguments, erased=0xFF):
+        image = bytearray()
+        for path in sorted(folder.iterdir()):
+            if not path.is_file():
+                raise ConfigError(f"records: {path.name} is a folder")
+            name, value = path.name.encode(), path.read_bytes()
+            image += NAME.pack(len(name)) + name
+            image += VALUE.pack(len(value)) + value
+        image += NAME.pack(0)
+        if len(image) > size:
+            raise ConfigError(f"records: {folder} takes {len(image)} bytes")
+        return bytes(image) + bytes([erased]) * (size - len(image))
+
+    def check(self, image, arguments):
+        try:
+            settings(image)
+        except ConfigError as error:
+            return [str(error)]
+        return []
+
+    def open(self, image, arguments):
+        return Settings(settings(image))
+
+
+def settings(image):
+    """The records in ``image``, by name."""
+    found, at = {}, 0
+    try:
+        while (length := NAME.unpack_from(image, at)[0]) != 0:
+            name = image[at + 2 : at + 2 + length].decode()
+            (size,) = VALUE.unpack_from(image, at + 2 + length)
+            start = at + 6 + length
+            if start + size > len(image):
+                raise ConfigError(f"records: {name} runs past the partition")
+            found[name], at = image[start : start + size], start + size
+    except (struct.error, UnicodeDecodeError) as error:
+        raise ConfigError(f"records: no end record ({error})") from None
+    return found
+
+
+class Settings:
+    """The records as files in one directory: /mode, /rate."""
+
+    def __init__(self, values):
+        self.values = values
+
+    def files(self, path="/"):
+        if path != "/":
+            raise ConfigError(f"records has one directory, /, not {path}")
+        return [self.stat(name) for name in sorted(self.values)]
+
+    def walk(self):
+        return self.files()
+
+    def read(self, path):
+        entry = self.stat(path)
+        if entry.kind != "file":
+            raise ConfigError(f"{path} is a directory")
+        return self.values[entry.name]
+
+    def exists(self, path):
+        name = path.strip("/")
+        return not name or name in self.values
+
+    def stat(self, path):
+        name = path.strip("/")
+        if not name:
+            return Entry(path="/", name="", kind="dir", size=0)
+        if name not in self.values:
+            raise ConfigError(f"no setting {path}")
+        size = len(self.values[name])
+        return Entry(path=f"/{name}", name=name, kind="file", size=size)
+
+
+def register(api: PluginApi) -> None:
+    api.storage_format("records", Records())
+```
+
+A partition of the board names it, and a folder holding the files `mode`
+and `rate` fills it:
+
+```jig
+partition config: records(on: flash0, at: 64 KiB, size: 4 KiB,
+                          contents: "settings")
+```
+
+`jig image build` then writes the records at 64 KiB into `flash0.img`,
+`jig image ls` lists `/mode` and `/rate`, and in a plan
+`dut.config.read("/mode")` returns the bytes the firmware left there.
+
+`api.storage_format(name, format)` registers the format for this plugin's
+board alone: another board's partitions don't see it, and two boards may
+register one name for two formats. A name Jig ships, `raw`, `littlefs` or
+`fat`, is refused, and so is an object without callable `arguments`,
+`build`, `check` and `open`. The four methods are those of
+`jig.plugin.StorageFormat`; beyond their signatures, Jig relies on these:
+
+`arguments(given, size)`
+: Gets the partition line's arguments other than `on`, `at`, `size` and
+  `contents`, and the partition's size. It returns them completed with
+  their defaults, or raises `ConfigError` naming a bad one. Jig calls it
+  when it resolves the board's storage, before anything else, and passes
+  what it returns to the other three. When the result holds an integer
+  `block_size` or `sector_size`, `at` and `size` must be multiples of it.
+
+`build(folder, size, arguments, erased)`
+: Builds a folder, the partition's contents, into exactly `size` bytes,
+  and any other length is an error naming the format. Bytes the format
+  doesn't write hold `erased`, the target's erased value. One folder and
+  one set of arguments give the same bytes: Jig caches the result, keyed
+  by the folder's paths and contents, the registered name, the completed
+  arguments, the size, `erased` and Jig's version, so a builder that
+  changes needs a value among its completed arguments that changes with
+  it.
+
+`check(image, arguments)`
+: Gets a prebuilt file, given as a partition's contents, as the file
+  holds it, which can be shorter than the partition; Jig pads it with the
+  erased value afterwards. It returns a list of problems, empty when the
+  file fits the arguments, and each one stops the run.
+
+`open(image, arguments)`
+: Gets the partition's whole region, `size` bytes, and returns a
+  `FileSystemView`, or `None` for a format without files, whose
+  partitions plans read only with `bytes()`. Jig opens the region again
+  for every member a plan calls, so the view may be a snapshot. A
+  `ConfigError` from `open` or from the view fails the plan's step and
+  makes `jig image` exit with 2.
+
+A `FileSystemView` has five methods, every path taken from the volume's
+root: `files(path)`, the entries directly inside a directory, sorted by
+name; `walk()`, every entry under the root, depth first; `read(path)`, a
+file's bytes; `exists(path)`; and `stat(path)`, one entry. An entry is a
+`jig.plugin.Entry`, with `path`, `name`, `kind` (`"file"` or `"dir"`) and
+`size` (0 for a directory). `read` and `stat` raise `ConfigError` for a
+path with nothing there, and `read` for a directory. Jig's messages, and
+the cache key, use the name the plugin registered, not the object's
+`name`.

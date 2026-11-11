@@ -37,6 +37,7 @@ from jig.report.report import (
 from jig.system import renode_shim as renode_commands
 
 if TYPE_CHECKING:
+    from jig.storage.layout import Layout, Partition
     from jig.system.boards import Board
 
 log = logging.getLogger("jig")
@@ -121,15 +122,22 @@ def _board_summary(name: str) -> list[str]:
     return lines
 
 
+def _storage_options(items: list[str] | None) -> dict[str, Path]:
+    """``--storage NAME=PATH`` options as a storage map, each path from the
+    current directory."""
+    storage: dict[str, Path] = {}
+    for item in items or []:
+        name, _, path = item.partition("=")
+        if not name or not path:
+            raise JigError(f"--storage expects NAME=PATH, got {item!r}")
+        storage[name] = Path(path).resolve()
+    return storage
+
+
 def _cmd_boot(args: argparse.Namespace) -> int:
     from jig.system.system import Simulation
 
-    storage = {}
-    for item in args.storage or []:
-        storage_name, _, image = item.partition("=")
-        if not image:
-            raise JigError(f"--storage expects NAME=IMAGE, got {item!r}")
-        storage[storage_name] = Path(image).resolve()
+    storage = _storage_options(args.storage)
     started = time.monotonic()
     with Simulation(
         name=f"boot-{args.board}",
@@ -271,13 +279,19 @@ def _contract_problems(board: Board, args: argparse.Namespace) -> list[str]:
     # Through the import system, so a stand-in in sys.modules (tests) is honoured.
     contracts = importlib.import_module("jig.contracts")
 
+    from jig.errors import ConfigError
+
     with Simulation(
         name=f"check-{board.name}",
         renode=args.renode,
         allow_untested_renode=args.allow_untested_renode,
     ) as simulation:
         machine = simulation.add_board("dut", board)
-        simulation.start(boot=False)
+        try:
+            # Building composes the storage with each model's erased value.
+            simulation.start(boot=False)
+        except ConfigError as exc:
+            return [str(exc)]
         found = contracts.verify(simulation.session, "dut", machine.board)
         return [str(problem) for problem in found]
 
@@ -339,6 +353,221 @@ def _cmd_platform(args: argparse.Namespace) -> int:
     else:
         sys.stdout.write(text)
     return EXIT_PASS
+
+
+# --------------------------------------------------------------------- image
+
+
+def _erased_values(items: list[str] | None) -> dict[str, int]:
+    values = {}
+    for item in items or []:
+        name, _, text = item.partition("=")
+        try:
+            value = int(text, 0)
+        except ValueError:
+            value = -1
+        if not name or not 0 <= value <= 0xFF:
+            raise JigError(f"--erased expects STORAGE=BYTE, such as flash0=0x00, got {item!r}")
+        values[name] = value
+    return values
+
+
+def _image_layout(
+    args: argparse.Namespace, storage: dict[str, Path] | None = None
+) -> tuple[Board, Layout, object]:
+    """The board ``--board`` (or BOARD) names with its options, its plugin
+    loaded, and its partitions resolved, with ``storage`` as a system's
+    storage map gives it."""
+    from jig.storage import layout
+    from jig.system import boards, registry
+    from jig.system.socs import driver_for
+
+    board = boards.find(args.board, options=_board_options(args.option))
+    registry.default().load_board(board)
+    driver = driver_for(board)
+    resolved = layout.for_board(board, driver, layout.sources(storage) if storage else None)
+    resolved.raise_problems()
+    return board, resolved, driver
+
+
+def _image_path(path: str) -> str:
+    """A path inside a partition, from its root; ``nested`` is ``/nested``,
+    so Git Bash, which turns ``/nested`` into a Windows path, can be given
+    one without the slash."""
+    return "/" + path.strip("/")
+
+
+def _cmd_image_build(args: argparse.Namespace) -> int:
+    from jig.storage import readback
+    from jig.storage.compose import compose
+    from jig.system import registry
+    from jig.system.socs import MachineConfig
+
+    board, resolved, driver = _image_layout(args, _storage_options(args.storage))
+    erased = _erased_values(args.erased)
+    names = {storage.name for storage in board.storage}
+    unknown = sorted(set(erased) - names)
+    if unknown:
+        raise JigError(
+            f"--erased: board {board.name} has no storage {', '.join(unknown)} "
+            f"(has: {', '.join(sorted(names)) or 'none'})"
+        )
+    output = Path(args.output or ".")
+    boot = args.boot or board.default_boot
+    modes = board.boot_modes or tuple(getattr(driver, "boot_modes", ()))
+    if modes and boot not in modes:
+        raise JigError(f"board {board.name} has no boot mode {boot!r} (has: {', '.join(modes)})")
+    config = MachineConfig(
+        name=board.name,
+        board=board,
+        boot=boot,
+        performance_mips=board.performance_mips,
+        workdir=output,
+        options=dict(board.option_values),
+        hooks=registry.default().hooks_for(board),
+    )
+    family = getattr(driver, "base_images", None)
+    bases: dict[str, Path] = family(config) if callable(family) else {}
+    if not board.storage:
+        print(f"board {board.name} has no storage devices")
+        return EXIT_PASS
+    output.mkdir(parents=True, exist_ok=True)
+    for storage in board.storage:
+        composed = compose(
+            resolved,
+            storage.name,
+            erased=erased.get(storage.name, 0xFF),
+            base=bases.get(storage.name),
+            base_label=f"the {board.soc} family's {boot} boot image",
+        )
+        target = readback.image_path(output, storage.name)
+        composed.write(target)
+        parts = [p.name for p in resolved.on(storage.name) if p.source is not None]
+        filled = f"; partitions {', '.join(parts)}" if parts else ""
+        base = "; the boot image at 0" if composed.base is not None else ""
+        print(
+            f"wrote {target} ({composed.size} bytes, erased 0x{composed.erased:02X}{base}{filled})"
+        )
+    return EXIT_PASS
+
+
+def _image_partition(args: argparse.Namespace) -> tuple[Partition, bytes]:
+    from jig.storage import readback
+
+    _board, resolved, _driver = _image_layout(args)
+    partition = resolved.partition(args.partition)
+    return partition, readback.from_file(partition, Path(args.image))
+
+
+def _cmd_image_ls(args: argparse.Namespace) -> int:
+    from jig.storage import readback
+
+    partition, data = _image_partition(args)
+    view = readback.view(partition, data)
+    path = _image_path(args.path)
+    if args.recursive:
+        if path != "/" and view.stat(path).kind != "dir":
+            raise JigError(f"partition {partition.name}: {path} is not a directory")
+        under = "/" if path == "/" else path + "/"
+        entries = [entry for entry in view.walk() if entry.path.startswith(under)]
+    else:
+        entries = view.files(path)
+    for entry in entries:
+        size = "" if entry.kind == "dir" else str(entry.size)
+        print(f"{entry.kind:<4} {size:>10}  {entry.path}")
+    return EXIT_PASS
+
+
+def _cmd_image_extract(args: argparse.Namespace) -> int:
+    from jig.storage import readback
+
+    partition, data = _image_partition(args)
+    output = Path(args.output).resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    if partition.format.open(data, partition.arguments) is None:
+        target = output / f"{partition.name}.bin"
+        target.write_bytes(data)
+        print(
+            f"partition {partition.name} is {partition.format_name}, without files: wrote {target}"
+        )
+        return EXIT_PASS
+    view = readback.view(partition, data)
+    files = directories = 0
+    for entry in view.walk():
+        target = (output / entry.path.lstrip("/")).resolve()
+        if not target.is_relative_to(output):
+            raise JigError(f"partition {partition.name}: {entry.path} leads outside {output}")
+        if entry.kind == "dir":
+            target.mkdir(parents=True, exist_ok=True)
+            directories += 1
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(view.read(entry.path))
+            files += 1
+    print(f"extracted {files} files and {directories} directories to {output}")
+    return EXIT_PASS
+
+
+def _add_image_commands(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    image = sub.add_parser(
+        "image", help="build a board's storage images, list and extract a partition's files"
+    )
+    commands = image.add_subparsers(dest="image_command", required=True)
+    build = commands.add_parser(
+        "build",
+        help="write each storage device's composed image, without Renode",
+        description="Write <storage>.img for each storage device of the board: its erased "
+        "value, the boot image of the board's boot mode, then the partitions' contents, as "
+        "a run composes it.",
+    )
+    build.add_argument("board", help="board name (on the board search path)")
+    build.add_argument(
+        "--option", action="append", metavar="NAME=VALUE", help="board option (repeatable)"
+    )
+    build.add_argument("--boot", help="boot mode (default: the board's)")
+    build.add_argument(
+        "--erased",
+        action="append",
+        metavar="STORAGE=BYTE",
+        help="a storage device's erased value, when its model's is not 0xFF (repeatable)",
+    )
+    build.add_argument(
+        "--storage",
+        action="append",
+        metavar="NAME=PATH",
+        help="a file for a storage device, a partition or a device memory, or a folder "
+        "for a partition, as a system's storage map gives (repeatable)",
+    )
+    build.add_argument("-o", "--output", help="directory for the images (default: here)")
+    build.set_defaults(func=_cmd_image_build)
+    for name, func, text in (
+        ("ls", _cmd_image_ls, "list the files in a partition of an image"),
+        ("extract", _cmd_image_extract, "copy the files of a partition of an image out"),
+    ):
+        command = commands.add_parser(name, help=text)
+        command.add_argument(
+            "image",
+            help="an image of the partition's storage device (a run's <machine>/<storage>.img) "
+            "or of its device memory",
+        )
+        command.add_argument("--board", required=True, help="the board the image belongs to")
+        command.add_argument("--partition", required=True, help="the partition's name")
+        command.add_argument(
+            "--option", action="append", metavar="NAME=VALUE", help="board option (repeatable)"
+        )
+        if name == "ls":
+            command.add_argument(
+                "--path",
+                default="/",
+                help="the directory to list, from the partition's root (default /); "
+                "nested and /nested are the same",
+            )
+            command.add_argument(
+                "-r", "--recursive", action="store_true", help="list every entry under it"
+            )
+        else:
+            command.add_argument("-o", "--output", required=True, help="directory for the files")
+        command.set_defaults(func=func)
 
 
 # -------------------------------------------------------------------- parser
@@ -410,8 +639,9 @@ def build_parser() -> argparse.ArgumentParser:
     boot.add_argument(
         "--storage",
         action="append",
-        metavar="NAME=IMAGE",
-        help="start a storage device from an image file (repeatable)",
+        metavar="NAME=PATH",
+        help="a file for a storage device, a partition or a device memory, or a folder "
+        "for a partition, as a system's storage map gives (repeatable)",
     )
     add_renode_options(boot)
     boot.set_defaults(func=_cmd_boot)
@@ -442,6 +672,7 @@ def build_parser() -> argparse.ArgumentParser:
     plans = sub.add_parser("list", help="list the tests in plans")
     plans.add_argument("plans", nargs="+", help="plan files (wildcards allowed)")
     plans.set_defaults(func=_cmd_list)
+    _add_image_commands(sub)
     _verbosity_after_commands(parser)
     return parser
 

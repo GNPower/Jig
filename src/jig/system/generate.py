@@ -8,8 +8,10 @@ A run writes it to ``<machine directory>/machine.repl`` and loads it;
 2. what the device's arguments fix: clocks, boot straps, memories;
 3. the programmable logic: a Zynq-7000 XSA's block design with the device's
    ``ip`` lines applied (``jig.ext.zynq7000.blockdesign``);
-4. peripherals at their controllers (``@ qspi 0``, ``@ i2c4 0x40``), GPIO
-   connections and pulls, and sensor inputs;
+4. peripherals at their controllers (``@ qspi 0``, ``@ i2c4 0x40``; ``@
+   spi1`` for a controller the family says takes one peripheral with no
+   address, ``single_target``), GPIO connections and pulls, and sensor
+   inputs;
 5. unmodelled ranges and property assignments from the device body;
 6. the board's ``repl`` fragments, as written;
 7. what Jig adds per run (CPU performance, register maps): the family
@@ -222,7 +224,16 @@ def _peripherals(writer: Writer, board: Board, device: Device, driver: SocDriver
         if part.bus is not None:
             _device_name, controller, address = part.bus
             link = next(link for link in board.links if part.name in link.targets.values())
-            where = f"{controller} {address if link.kind != 'i2c' else f'0x{address:X}'}"
+            if single_target(board, device, driver, controller):
+                if list(link.targets) != [0]:
+                    raise ConfigError(
+                        f"{link.where}: link {link.name}: {device.name}.{controller} takes one "
+                        "peripheral, which Renode registers with no address: give it one "
+                        f"target, at chip select 0 ({{0: {part.name}}})"
+                    )
+                where = controller
+            else:
+                where = f"{controller} {address if link.kind != 'i2c' else f'0x{address:X}'}"
         else:
             where = "none"
         lines = properties(part.properties)
@@ -342,6 +353,14 @@ def _analog(driver: SocDriver, device: Device, channel: ChannelRef) -> str:
         return ANALOG_INPUTS
     kind: str = decide(device, channel.owner.name)
     return kind
+
+
+def single_target(board: Board, device: Device, driver: SocDriver, controller: str) -> bool:
+    """Whether the family says ``controller`` takes one peripheral that
+    Renode registers at it with no address (``@ spi1``), as Renode's STM32
+    SPI models do; such a link has one target, at chip select 0."""
+    decide = getattr(driver, "single_target", None)
+    return bool(decide(board, device, controller)) if callable(decide) else False
 
 
 def interface_kind(board: Board, device: Device, driver: SocDriver, name: str) -> str | None:

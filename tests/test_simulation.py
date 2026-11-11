@@ -70,7 +70,15 @@ class RecordingSession:
             return "Booted\n"
         if command.endswith((" Write", "WriteFrames")) or " Write " in command:
             return "ack"
+        if command.startswith("machine JigContracts"):
+            return self.contracts_reply
         return ""
+
+    # What the fixture flash's model answers the contract query with.
+    contracts_reply = (
+        "found JigFixtures.SpiNorFlash IStorage=16777216 ErasedValue=255 "
+        "IPowerCycled ISpiNorFlash\n"
+    )
 
     def python(self, code: str) -> str:
         self.commands.append(f"(python {code[:40]})")
@@ -186,7 +194,7 @@ def test_the_machine_loads_the_description_jig_writes(
     )
     assert "globalTimer:\n    frequency: 333333333" in description
     assert description.rstrip().endswith("cpu0:\n    PerformanceInMips: 100")
-    assert f"machine LoadPlatformDescription @{path.as_posix()}" in renode[0].commands
+    assert f'machine LoadPlatformDescription "{path.as_posix()}"' in renode[0].commands
 
 
 def test_a_zynq_board_without_a_hardware_design_boots_over_jtag(
@@ -203,7 +211,7 @@ def test_a_zynq_board_without_a_hardware_design_boots_over_jtag(
     assert [c for c in boot if not c.startswith("(select")] == [
         "bootrom HoldCoreForDebugger true",
         "bootrom PowerOn",
-        f"sysbus LoadELF @{elf.as_posix()}",
+        f'sysbus LoadELF "{elf.as_posix()}"',
         "bootrom HoldCoreForDebugger false",
         "cpu0 IsHalted false",
     ]
@@ -219,8 +227,8 @@ def test_a_zynq_board_with_a_hardware_design_replays_ps7_init(
     sim.add_board("dut", "example-zynq")
     sim.start()
     commands = renode[0].commands
-    program = next(c for c in commands if c.startswith("machine RunRegisterProgram @"))
-    bitstream = next(c for c in commands if c.startswith("devc ConfigureFromJtag @"))
+    program = next(c for c in commands if c.startswith('machine RunRegisterProgram "'))
+    bitstream = next(c for c in commands if c.startswith('devc ConfigureFromJtag "'))
     assert commands.index("bootrom PowerOn") < commands.index(program)
     assert commands.index(program) < commands.index(bitstream)
     assert commands.index(bitstream) < commands.index("cpu0 IsHalted false")
@@ -294,7 +302,7 @@ def test_an_stm32_board_boots_its_elf_at_physical_addresses(
     session.commands.clear()
     machine.power_on()
     assert [c for c in session.commands if not c.startswith("(")] == [
-        f"sysbus LoadELF @{elf.as_posix()} false",
+        f'sysbus LoadELF "{elf.as_posix()}" false',
         "cpu InitVectorTableOffset 0x8004000",
         "cpu IsHalted false",
     ]
@@ -807,7 +815,7 @@ def test_boot_replays_the_debugger_on_a_jtag_board(
         assert [c for c in session.commands if not c.startswith("(select")] == [
             "bootrom HoldCoreForDebugger true",
             "bootrom PowerOn",
-            f"sysbus LoadELF @{elf.as_posix()}",
+            f'sysbus LoadELF "{elf.as_posix()}"',
             "bootrom HoldCoreForDebugger false",
             "cpu0 IsHalted false",
         ]

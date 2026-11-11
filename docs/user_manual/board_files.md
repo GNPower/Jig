@@ -61,8 +61,9 @@ directory.
 
 - Relative to the root: firmware, the XSA, `airhdl(...)` sources and
   `cosim(...)` inputs.
-- Relative to the board file: `models`, `plugin`, `repl` fragments, and a
-  `build(...)` firmware's script and sources.
+- Relative to the board file: `models`, `plugin`, `repl` fragments, a
+  `build(...)` firmware's script and sources, and a partition's
+  `contents`.
 
 ## How Jig reads a board file
 
@@ -72,8 +73,16 @@ then the system's board line, then `jig run --option`. `if`, `elif` and
 `else` in the board and in device bodies pick declarations by those values,
 and expressions and string fields use them: `"zed-node-{node}.elf"`.
 Strings also see `workdir`, the machine's directory in the run, so a
-monitor command in `commands` can name `@{workdir}/trace.vcd`; `jig check`
-and `jig platform` evaluate with the placeholder `<workdir>`.
+monitor command in `commands` can name a file there:
+
+```jig
+commands: ["usart2 CreateFileBackend \"{workdir}/usart2.txt\" true"]
+```
+
+Put such a path in double quotes, as Jig does with every file it names:
+the monitor ends an `@` path at the first space, and a run directory's
+path can hold one. `jig check` and `jig platform` evaluate with the
+placeholder `<workdir>`.
 
 Declarations come in any order. Jig collects the names of the devices,
 peripherals and links first, so a link can name a peripheral declared below
@@ -83,7 +92,9 @@ device `zynq`, `zynq.mio[7]` one of its pins, `flash0` a peripheral,
 and `adc.channel[3]` one of its analog inputs. A name declared twice is an
 error with its file and line, and so is a name that is already an option, a
 constant, `workdir`, or one of the board file's constructors: `choice`,
-`memory`, `cosim`, `airhdl`, `build` and `command`.
+`memory`, `cosim`, `airhdl`, `build` and `command`. A partition is the
+exception: it is no value in expressions, so it may share its name with
+an option, which lets the option pick its contents.
 
 ## Settings
 
@@ -113,10 +124,13 @@ setting is an error.
     real-time clock contract.
 * - `storage`
   - A list of peripherals that keep an image file across resets, such as
-    `[flash0]`. Each image's size is the peripheral's `size` property. The
-    Zynq-7000 family keeps one image file per peripheral in each run, so
-    writes survive resets, and a system's `storage` setting gives initial
-    images.
+    `[flash0]`, for every family. In each run Jig gives each one the file
+    `<storage>.img` in the machine's directory, which its model writes as
+    the firmware programs and erases, so writes survive resets and power
+    cycles. Partitions and a system's `storage` map fill it before the
+    boot ({doc}`storage`). Each peripheral's model implements Jig's
+    storage contract, and its `size` property, which partitions need,
+    agrees with the model's.
 * - `backup_supply`
   - Peripherals a power cycle leaves running, such as a clock on a coin
     cell. Every other peripheral whose model implements Jig's power-cycle
@@ -310,7 +324,20 @@ a `platform` file.
 
 The family's interfaces and internal peripherals are the platform's names
 (`usart2`, `can1`, `fdcan1`, `i2c4`, `spi3`, `adc4`, `rtc`), and its pins
-`pa[0]` to `pk[15]`. The three firmware forms:
+`pa[0]` to `pk[15]`.
+
+Renode's STM32 SPI controllers (`STM32SPI` on the STM32F4 platform,
+`STM32WBA_SPI` on Jig's STM32U5 platforms, and `STM32H7_SPI`) each take
+one peripheral, which Renode registers with no address: Jig writes
+`flash0: JigFixtures.SpiNorFlash @ spi1`. An `spi` link on one of them
+has one target, at chip select 0, and a second target or another chip
+select is an error that names the link. `STM32SPI` never tells its
+peripheral that a transfer ended (it calls no `FinishTransmission`), so a
+model on it learns where each command ends from a chip-select pin, as the
+test fixtures' `JigFixtures.SpiNorFlash` does on its input 0: `link
+nor_cs: gpio(from: mcu.pa[4], to: flash0.gpio[0])`.
+
+The three firmware forms:
 
 - `"build/app.elf"`: a prebuilt ELF, relative to the root.
 - `command(["cmake", "--build", "--preset", "app"], output:
@@ -365,7 +392,7 @@ leaves the board.
 * - `spi`, `qspi`
   -
   - `controller`, a device interface; `targets`, a map from chip select to
-    a peripheral
+    a peripheral (one, at chip select 0, on an STM32's SPI controller)
 * - `i2c`
   -
   - `controller`; `targets`, a map from 7-bit address to a peripheral
@@ -413,6 +440,28 @@ and reports no codes to the harness. In Renode 1.17.0 the converters
 built on `STM32_ADC_Common` take one: the STM32F0, F3, G0, H7, L5 and WBA
 models. Renode's STM32F4 platform has no converter, and ADC4 on Jig's
 STM32U5 platforms is Jig's model.
+
+## Partitions
+
+```jig
+partition config: raw(on: flash0, at: 0, size: 64 KiB,
+                      contents: "build/config.bin")
+partition data: littlefs(on: flash0, at: 1 MiB, size: 15 MiB,
+                         block_size: 4 KiB, read_size: 16, prog_size: 16)
+partition table: raw(on: mcu.flash, at: 128 KiB, size: 16 KiB)
+```
+
+A partition is a region the firmware uses: of a peripheral on the
+`storage` list (`on: flash0`), or of a memory of the device (`on:
+mcu.flash`), starting `at` bytes from its first byte. Its format is
+`raw`, `littlefs`, `fat` or one the board's plugin registers, and the
+format's arguments repeat what the firmware mounts the region with.
+`contents`, a file or a folder relative to the board file, fills it unless
+a system gives something else. Partitions sit at the board's top level or
+under `if`, and none overlaps another or runs past the end of its target.
+{doc}`storage` describes the formats, the memories each family names, how
+a system fills partitions, and how Jig composes the bytes and reads them
+back.
 
 ## Protocol stacks
 
@@ -504,7 +553,8 @@ ip filter: cosim(on: 0x43C10000 .. 0x43C10FFF, irq: 1,
 - `memory(size: ...)` is block RAM; with an address range in `on`, the
   size is the range's. Jig's model of the PL clears it on a system reset
   and whenever the PL is configured again, since block RAM loses its
-  contents then (UG585 section 26.2).
+  contents then (UG585 section 26.2), and a partition on it gives the
+  initial contents each configuration loads ({doc}`programmable_logic`).
 - `airhdl(package, module)` makes a property value from airhdl sources:
   Jig generates the JSON register map each run and fills the property in.
 - `cosim(...)` puts RTL under Verilator in place of a model
@@ -527,8 +577,9 @@ to `<machine directory>/machine.repl`, in this order:
    memory sizes, the core clock;
 3. the programmable logic: the XSA's block design with the device's `ip`
    lines applied, or the `ip` lines alone;
-4. peripherals at their controllers (`@ spi0 1`, `@ i2c4 0x40`), GPIO
-   connections and pulls, and sensor inputs;
+4. peripherals at their controllers (`@ spi0 1`, `@ i2c4 0x40`, and
+   `@ spi1` on an STM32's SPI controllers), GPIO connections and pulls,
+   and sensor inputs;
 5. unmodelled ranges and property assignments;
 6. the board's `repl` fragments;
 7. what Jig adds per run: CPU performance and register maps.
@@ -547,11 +598,12 @@ run, so the board file names none.
 
 Before Renode starts, Jig checks that every file each board of the plan
 needs exists: its `repl` fragments, its `airhdl(...)` sources and
-co-simulation inputs, the images its storage starts from, every firmware
-file and the XSA. A `command(...)` or `build(...)` firmware makes its ELF
-at the first boot, so it has no file to check yet. A board that starts
-without power is checked too, since a plan can power it on. A missing file
-stops the run with exit code 2, naming each one.
+co-simulation inputs, every file and folder its partitions' `contents` and
+the system's `storage` map name, every firmware file and the XSA. A
+`command(...)` or `build(...)` firmware makes its ELF at the first boot,
+so it has no file to check yet. A board that starts without power is
+checked too, since a plan can power it on. A missing file stops the run
+with exit code 2, naming each one.
 
 ## From board.yaml
 

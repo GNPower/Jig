@@ -5,7 +5,7 @@
 stage registrations here and commit them when ``register`` returns. The board
 loader, the simulation and the interpreter then ask this module for board
 settings, plan functions, handle members, housekeeping codecs, node kinds, bus
-observers, protocol layers, device families and family hooks.
+observers, protocol layers, device families, family hooks and storage formats.
 
 Board plugins are loaded once per board definition and process. Each plugin
 source (a ``.py`` file, or a package directory holding ``__init__.py``) gets
@@ -88,6 +88,7 @@ class Staged:
     protocols: dict[str, Any] = field(default_factory=dict)
     device_families: dict[str, Any] = field(default_factory=dict)
     hooks: dict[str, Any] = field(default_factory=dict)
+    storage_formats: dict[str, Any] = field(default_factory=dict)
 
 
 def same(first: Any, second: Any) -> bool:
@@ -118,6 +119,7 @@ class Registry:
         self.bus_observers: dict[str, list[Entry]] = {}
         self.protocols: dict[str, list[Entry]] = {}
         self.device_families: dict[str, list[Entry]] = {}
+        self.storage_formats: dict[str, list[Entry]] = {}
         self.hooks: dict[tuple[Path, str], Entry] = {}
         self.boards: dict[Path, Owner] = {}  # board file -> owner, once its plugin ran
         self._modules: dict[Path, ModuleType] = {}
@@ -180,6 +182,7 @@ class Registry:
             (self.members, staged.members),
             (self.functions, staged.functions),
             (self.device_families, staged.device_families),
+            (self.storage_formats, staged.storage_formats),
         ):
             for key, value in staged_table.items():
                 add(table, key, value)
@@ -325,6 +328,13 @@ class Registry:
             if entry.owner.source == board.source:
                 return entry
         return None
+
+    def storage_formats_for(self, board: Board) -> dict[str, Any]:
+        """The storage formats the bundled extensions and the board's own
+        plugin registered, by name: what a partition of the board may use
+        besides the formats Jig ships."""
+        found = self._for(self.storage_formats, [board.source])
+        return {name: entry.value for name, entry in found.items()}
 
     def hooks_for(self, board: Board) -> dict[str, Any]:
         return {

@@ -39,12 +39,32 @@ and the board file's checks use these when the driver defines them:
     What a name of the device is at the end of a link (``uart``, ``can``,
     ``spi``), for stack checks and link ends; None when the family can't
     say, and a ConfigError for a name the family rejects.
+``single_target(board, device, controller)``
+    True for a bus controller that takes one peripheral, which Renode
+    registers at it with no address (``@ spi1``): Renode's STM32 SPI models.
+    Its link then has one target, at chip select 0.
 ``required_files(config)``
     The files a boot needs that the device's ``firmware`` does not list (a
     file its own arguments name, say) as a mapping from what each is to its
     path. Before Renode starts, ``Simulation.start`` checks that these exist
     along with the board's firmware files, storage images and register-map
     sources.
+``memories(board)``
+    The device's own memories that partitions can name, by name
+    (``jig.storage.memory.DeviceMemory``): their size, their kind and the
+    machine's peripherals that hold them. Jig composes what each receives
+    into ``MachineConfig.memory_images`` before ``configure``; the driver
+    writes a non-volatile memory's regions once before the first boot, a
+    volatile one's at every power-on, and programmable-logic block RAM's
+    each time the logic is configured.
+``base_images(config)``
+    Images the family lays under a storage device's partitions when the
+    system gives no file for the whole device, by storage name: a
+    Zynq-7000's Quad-SPI boot image.
+
+Jig attaches each storage device's composed image to its peripheral
+(``AttachImage``) for every family, after the platform loads and before
+``configure``.
 """
 
 from __future__ import annotations
@@ -57,6 +77,7 @@ from typing import Any, Protocol
 
 from jig.errors import ConfigError
 from jig.renode.session import RenodeSession
+from jig.storage.memory import MemoryImage
 from jig.system import registry
 from jig.system.boards import Board, RegisterMapSource
 
@@ -79,14 +100,25 @@ class MachineConfig:
     boot: str
     performance_mips: int
     workdir: Path
-    storage_images: dict[str, Path] = field(default_factory=dict)  # initial contents per storage
+    # The system's file for a whole storage device, by storage name.
+    storage_images: dict[str, Path] = field(default_factory=dict)
     options: dict[str, Any] = field(default_factory=dict)  # board option -> chosen value
     hooks: Mapping[str, Any] = field(default_factory=dict)  # family -> what the plugin added
     power_cycled: tuple[str, ...] | None = None  # found by ``power_cycled``
+    # The system's storage map: storage devices, partitions and device
+    # memories ("mcu.flash") to a file or folder, or to files by offset.
+    storage_sources: dict[str, Any] = field(default_factory=dict)
+    # What each memory of the device receives, by memory name, once composed.
+    memory_images: dict[str, MemoryImage] = field(default_factory=dict)
 
     def register_map_sources(self) -> tuple[RegisterMapSource, ...]:
         """The register maps the board's ``airhdl(...)`` properties name."""
         return tuple(self.board.register_maps)
+
+    def sources(self) -> dict[str, Any]:
+        """The system's storage map: ``storage_sources``, or for a
+        configuration that gives only ``storage_images``, those."""
+        return dict(self.storage_sources or self.storage_images)
 
 
 # One IronPython expression (self is Renode's monitor): the names among

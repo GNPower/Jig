@@ -483,3 +483,32 @@ class SensorSpec:
     channel: ChannelRef
     initial: float | None
     where: str
+
+
+@dataclass(frozen=True)
+class PartitionSpec:
+    """``partition NAME: FORMAT(on:, at:, size:, contents:, ...)``: a region of
+    a storage peripheral (``on: flash0``) or of a device's own memory (``on:
+    mcu.flash``), ``at`` bytes from its first byte, in a format whose other
+    arguments (``arguments``, as given) repeat the firmware's mount settings.
+    ``contents`` is the default source, a file or a folder relative to the
+    board file; None leaves the region as the base image left it."""
+
+    name: str
+    format: str
+    on: PeripheralRef | InternalRef
+    at: int
+    size: int
+    arguments: Mapping[str, Any]
+    contents: Path | None
+    where: str
+
+    @property
+    def target(self) -> str:
+        """What ``on`` names: ``flash0``, or ``mcu.flash`` for a device's memory."""
+        return repr(self.on)
+
+    @property
+    def end(self) -> int:
+        """The first byte past the region."""
+        return self.at + self.size

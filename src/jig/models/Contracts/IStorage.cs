@@ -12,17 +12,24 @@ namespace Antmicro.Renode.Peripherals.Jig.Contracts
         /// the peripheral must equal it.</summary>
         long Size { get; }
 
+        /// <summary>The value every byte holds once erased. Jig fills an image
+        /// with it before it places a board's partitions and files, and reads
+        /// it through the JigContracts query. 0xFF, NOR flash's, unless the
+        /// model says otherwise: an MRAM or EEPROM model returns its
+        /// own.</summary>
+        byte ErasedValue => 0xFF;
+
         /// <summary>Makes the file at <paramref name="path"/> the device's
         /// backing store. A file that exists and is not empty becomes the
         /// device's contents; it may not be longer than <see cref="Size"/>
         /// (RecoverableException), and addresses past its end read as erased
-        /// (0xFF for NOR flash). A missing or empty file takes the device's
-        /// current contents. Afterwards the file is <see cref="Size"/> bytes
-        /// long, and every change the device makes (a program, an erase) is
-        /// written to it as it completes, so the file holds the contents when the
-        /// run ends. Contents survive Reset and PowerCycle. A second call moves
-        /// the device to the new file; the first keeps what was written to
-        /// it.</summary>
+        /// (<see cref="ErasedValue"/>). A missing or empty file takes the
+        /// device's current contents. Afterwards the file is <see cref="Size"/>
+        /// bytes long, and every change the device makes (a program, an erase)
+        /// is written to it as it completes, so the file holds the contents
+        /// when the run ends. Contents survive Reset and PowerCycle. A second
+        /// call moves the device to the new file; the first keeps what was
+        /// written to it.</summary>
         void AttachImage(string path);
     }
 }
