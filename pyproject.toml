@@ -58,20 +58,20 @@ docs = [
     "myst-parser>=4.0,<6",
 ]
 lint = [
-    "ruff==0.17.3",
+    "ruff==0.17.4",
     "pymarkdownlnt==0.9.41",
-    "zizmor==1.31.1",
+    "zizmor==1.32.0",
 ]
 typecheck = [
     "jig-dsl[test]",
     "mypy==2.4.1",
-    "types-PyYAML==6.0.12.20260906",
+    "types-PyYAML==6.0.12.20261103",
     "nox==2026.10.20",
 ]
 release = [
     "build==1.6.1",
     "twine==7.0.0",
-    "bump-my-version==1.6.7",
+    "bump-my-version==1.8.1",
 ]
 audit = [
     "pip-audit==2.10.1",
